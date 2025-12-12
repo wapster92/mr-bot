@@ -143,8 +143,11 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
 
   if (attrs.action === 'close' || attrs.action === 'merge') {
     const leads = getLeadUsers();
+    const closerName = payload.user?.name ?? payload.user?.username ?? 'Кто-то';
+    const originalAuthorName = doc.author.name ?? doc.author.gitlabUsername ?? '—';
+    const actionText = attrs.action === 'merge' ? 'слит' : 'закрыт';
     const parts = [
-      `ℹ️ MR "${doc.title}" был ${attrs.action === 'merge' ? 'слит' : 'закрыт'} автором ${doc.author.name ?? doc.author.gitlabUsername ?? ''}.`,
+      `ℹ️ MR "${doc.title}" был ${actionText}. Автор MR: ${originalAuthorName}. Действие выполнил: ${closerName}.`,
       doc.url,
     ];
     if (doc.taskUrl) {
