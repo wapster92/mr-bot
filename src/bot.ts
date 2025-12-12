@@ -1,5 +1,6 @@
 import { Context, Telegraf } from 'telegraf';
 import { getUserByTelegramUsername, persistUserChatId } from './data/userStore';
+import { listActiveMergeRequests } from './data/mergeRequestRepository';
 
 export type BotContext = Context;
 
@@ -39,6 +40,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         '/help — показать эту подсказку',
         '/status — базовая проверка доступности бота',
         '/review — заглушка: в будущем покажет MR, где нужен ревьюер',
+        '/mrs — показать активные MR и их статус',
       ].join('\n'),
     ),
   );
@@ -73,6 +75,38 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     ];
 
     ctx.reply(['Ты в whitelist ✅', ...info].join('\n'));
+  });
+
+  bot.command('mrs', async (ctx) => {
+    const user = getUserByTelegramUsername(ctx.from?.username);
+    if (!user) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+
+    const mergeRequests = await listActiveMergeRequests(10);
+    if (!mergeRequests.length) {
+      await ctx.reply('Активных MR не найдено.');
+      return;
+    }
+
+    const messages = mergeRequests.map((mr) => {
+      const reviewerNames = mr.reviewers?.length ? mr.reviewers.join(', ') : 'не назначены';
+      const authorName = mr.author.name ?? mr.author.gitlabUsername ?? '—';
+      const parts = [
+        `#${mr.iid}: ${mr.title}`,
+        `Автор: ${authorName}`,
+        `Ревьюеры: ${reviewerNames}`,
+        `Линт: ${mr.lastLintStatus ?? 'не запускался'}`,
+        mr.url,
+      ];
+      if (mr.taskUrl) {
+        parts.push(`Задача: ${mr.taskUrl}`);
+      }
+      return parts.filter(Boolean).join('\n');
+    });
+
+    await ctx.reply(messages.join('\n\n'));
   });
 
   return bot;

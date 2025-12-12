@@ -1,5 +1,5 @@
 import { findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
-import { getChatIdByUsername, getUserByGitlabUsername } from '../../data/userStore';
+import { getChatIdByUsername, getUserByGitlabUsername, getLeadUsers } from '../../data/userStore';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 
@@ -82,6 +82,21 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
     if (!reviewers.length) {
       console.warn('[pipeline] No reviewers assigned for MR', doc.iid);
       return;
+    }
+
+    const leads = getLeadUsers();
+    for (const lead of leads) {
+      if (!lead.telegramUsername) continue;
+      const chatId = await getChatIdByUsername(lead.telegramUsername);
+      if (!chatId) continue;
+      const parts = [
+        `ℹ️ MR "${doc.title}" прошёл линт.`,
+        doc.url,
+      ];
+      if (doc.taskUrl) {
+        parts.push(`Задача: ${doc.taskUrl}`);
+      }
+      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
     }
 
     for (const reviewer of reviewers) {

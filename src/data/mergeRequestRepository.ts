@@ -70,3 +70,12 @@ export const updateMergeRequest = async (
   const collection = await getCollection();
   await collection.updateOne({ projectId, iid }, { $set: update });
 };
+
+export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({ state: { $nin: ['merged', 'closed'] } })
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .toArray();
+};

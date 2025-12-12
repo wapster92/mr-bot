@@ -114,17 +114,25 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     const reviewers = await pullReviewers([gitlabAuthorUsername ?? ''].filter(Boolean) as string[]);
     if (reviewers.length) {
       doc.reviewers = reviewers;
+      const reviewerList = reviewers.join(', ');
+      const parts = [
+        `🆕 Создан MR "${doc.title}" от ${doc.author.name ?? doc.author.gitlabUsername ?? ''}.`,
+        `Ревьюеры: ${reviewerList}`,
+        doc.url,
+      ];
+      if (doc.taskUrl) {
+        parts.push(`Задача: ${doc.taskUrl}`);
+      }
+      const leads = getLeadUsers();
+      for (const lead of leads) {
+        if (!lead.telegramUsername) continue;
+        const chatId = await getChatIdByUsername(lead.telegramUsername);
+        if (!chatId) continue;
+        await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+      }
       if (doc.author.telegramUsername) {
         const authorChatId = await getChatIdByUsername(doc.author.telegramUsername);
         if (authorChatId) {
-          const reviewerList = reviewers.join(', ');
-          const parts = [
-            `👀 MR "${doc.title}" будут проверять: ${reviewerList}`,
-            doc.url,
-          ];
-          if (doc.taskUrl) {
-            parts.push(`Задача: ${doc.taskUrl}`);
-          }
           await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'));
         }
       }
@@ -132,6 +140,30 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   await upsertMergeRequest(doc);
+
+  if (attrs.action === 'close' || attrs.action === 'merge') {
+    const leads = getLeadUsers();
+    const parts = [
+      `ℹ️ MR "${doc.title}" был ${attrs.action === 'merge' ? 'слит' : 'закрыт'} автором ${doc.author.name ?? doc.author.gitlabUsername ?? ''}.`,
+      doc.url,
+    ];
+    if (doc.taskUrl) {
+      parts.push(`Задача: ${doc.taskUrl}`);
+    }
+    for (const lead of leads) {
+      if (!lead.telegramUsername) continue;
+      const chatId = await getChatIdByUsername(lead.telegramUsername);
+      if (!chatId) continue;
+      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+    }
+    if (doc.author.telegramUsername) {
+      const authorChatId = await getChatIdByUsername(doc.author.telegramUsername);
+      if (authorChatId) {
+        await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'));
+      }
+    }
+    return;
+  }
 
   if (typeof attrs.approvals_left === 'number' && attrs.approvals_left === 0 && !existingDoc?.finalReviewNotified) {
     const leads = getLeadUsers();
