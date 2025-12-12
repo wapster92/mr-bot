@@ -114,6 +114,20 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     const reviewers = await pullReviewers([gitlabAuthorUsername ?? ''].filter(Boolean) as string[]);
     if (reviewers.length) {
       doc.reviewers = reviewers;
+      if (doc.author.telegramUsername) {
+        const authorChatId = await getChatIdByUsername(doc.author.telegramUsername);
+        if (authorChatId) {
+          const reviewerList = reviewers.join(', ');
+          const parts = [
+            `👀 MR "${doc.title}" будут проверять: ${reviewerList}`,
+            doc.url,
+          ];
+          if (doc.taskUrl) {
+            parts.push(`Задача: ${doc.taskUrl}`);
+          }
+          await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'));
+        }
+      }
     }
   }
 
