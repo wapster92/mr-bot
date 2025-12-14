@@ -18,13 +18,15 @@
 
 ## Docker Compose
 
-`docker-compose.yml` поднимает контейнер с ботом. После изменений собираем образ и перезапускаем:
+`docker-compose.yml` поднимает контейнер с ботом (Mongo остаётся облачной). Чтобы собрать и запустить сервис:
 
 ```bash
-docker compose up --build bot
+docker compose up --build -d
 ```
 
-Бот будет доступен на `http://localhost:3000`. В продакшене контейнер можно объединить с Nginx из удалённого сервера.
+Переcобрать только код без остановки можно через `docker compose up -d --build bot`, посмотреть логи — `docker compose logs -f bot`, перезапустить — `docker compose restart bot`.
+
+Контейнер слушает `3000`, поэтому Nginx на той же машине просто проксирует HTTPS → `http://localhost:3000`.
 
 ### Регистрация пользователей
 
