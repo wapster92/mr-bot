@@ -52,7 +52,8 @@ const isDraft = (attrs: any): boolean => {
 export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   const project = payload.project ?? {};
   const attrs = payload.object_attributes ?? {};
-  const gitlabAuthorUsername = payload.user?.username;
+  const gitlabAuthorUsername =
+    payload.object_attributes?.author?.username ?? payload.user?.username;
   const userRecord = getUserByGitlabUsername(gitlabAuthorUsername);
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
@@ -60,7 +61,11 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   const author = {
     ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
     ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
-    ...(payload.user?.name ? { name: payload.user.name } : {}),
+    ...(payload.object_attributes?.author?.name
+      ? { name: payload.object_attributes.author.name }
+      : payload.user?.name
+      ? { name: payload.user.name }
+      : {}),
   };
 
   const doc: MergeRequestDocument = {

@@ -22,7 +22,11 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
   }
 
   const doc = await findMergeRequestByBranch(projectPath, branch);
-  if (!doc || !doc.reviewers?.length) {
+  if (!doc || ['merged', 'closed'].includes(doc.state ?? '')) {
+    return;
+  }
+
+  if (!doc.reviewers?.length) {
     return;
   }
 

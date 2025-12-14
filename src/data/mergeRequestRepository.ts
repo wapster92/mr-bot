@@ -74,7 +74,11 @@ export const updateMergeRequest = async (
 export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestDocument[]> => {
   const collection = await getCollection();
   return collection
-    .find({ state: { $nin: ['merged', 'closed'] } })
+    .find({
+      $and: [
+        { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
+      ],
+    })
     .sort({ updatedAt: -1 })
     .limit(limit)
     .toArray();

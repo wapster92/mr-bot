@@ -61,7 +61,10 @@ export const pullReviewers = async (exclude: string[]): Promise<string[]> => {
       break;
     }
 
-    if (normalizedExclude.includes(next.toLowerCase())) {
+    if (
+      normalizedExclude.includes(next.toLowerCase()) ||
+      selected.map((n) => n.toLowerCase()).includes(next.toLowerCase())
+    ) {
       continue;
     }
 
