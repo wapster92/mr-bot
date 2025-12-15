@@ -16,7 +16,7 @@ const isLintPipeline = (payload: any): boolean => {
 
 const getMergeRequestInfo = (payload: any): { projectId?: number; iid?: number } => {
   const attrs = payload.object_attributes ?? {};
-  const mergeRequest = attrs.merge_request ?? {};
+  const mergeRequest = payload.merge_request ?? attrs.merge_request ?? {};
   return {
     projectId: mergeRequest.target_project_id ?? mergeRequest.source_project_id,
     iid: mergeRequest.iid,
