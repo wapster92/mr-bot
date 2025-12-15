@@ -173,7 +173,10 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     return;
   }
 
-  if (typeof attrs.approvals_left === 'number' && attrs.approvals_left === 0 && !existingDoc?.finalReviewNotified) {
+  const approvalTriggered =
+    (typeof attrs.approvals_left === 'number' && attrs.approvals_left === 0) ||
+    attrs.action === 'approved';
+  if (approvalTriggered && !existingDoc?.finalReviewNotified) {
     const leads = getLeadUsers();
     for (const lead of leads) {
       if (!lead.telegramUsername) {
