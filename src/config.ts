@@ -42,6 +42,12 @@ const parseBoolean = (value: string | undefined): boolean => {
   return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
 };
 
+const parseNumber = (value: string | undefined, fallback: number): number => {
+  if (!value) return fallback;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : fallback;
+};
+
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME ?? 'mr-bot';
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
@@ -67,6 +73,7 @@ export const config = {
     baseUrl: JIRA_BASE_URL,
   },
   logGitlabEvents: parseBoolean(process.env.LOG_GITLAB_EVENTS),
+  logGitlabMaxMb: parseNumber(process.env.LOG_GITLAB_MAX_MB, 20),
 } as const;
 
 console.log(config.mode)
