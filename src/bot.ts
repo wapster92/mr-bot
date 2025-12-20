@@ -1,5 +1,10 @@
 import { Context, Telegraf } from 'telegraf';
-import { getUserByGitlabUsername, getUserByTelegramUsername, persistUserChatId } from './data/userStore';
+import {
+  escapeHtml,
+  formatGitlabUserLabel,
+  getUserByTelegramUsername,
+  persistUserChatId,
+} from './data/userStore';
 import { listActiveMergeRequests } from './data/mergeRequestRepository';
 
 export type BotContext = Context;
@@ -90,11 +95,30 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       return;
     }
 
-    const messages = mergeRequests.map((mr) => {
-      const reviewerNames = mr.reviewers?.length ? mr.reviewers.join(', ') : 'не назначены';
-      const authorName = mr.author.name ?? mr.author.gitlabUsername ?? '—';
+    const buildUserLabel = (gitlabUsername: string): Promise<string> =>
+      formatGitlabUserLabel(gitlabUsername);
+
+    const messages: string[] = [];
+    for (const mr of mergeRequests) {
       const reviewers = mr.reviewers ?? [];
       const approvedBy = mr.approvedBy ?? [];
+      const reviewerLabels = reviewers.length
+        ? await Promise.all(reviewers.map((reviewer) => buildUserLabel(reviewer)))
+        : [];
+      const approvedLabels = approvedBy.length
+        ? await Promise.all(approvedBy.map((approver) => buildUserLabel(approver)))
+        : [];
+      const pendingReviewers = reviewers.filter((reviewer) => !approvedBy.includes(reviewer));
+      const pendingLabels = pendingReviewers.length
+        ? await Promise.all(pendingReviewers.map((reviewer) => buildUserLabel(reviewer)))
+        : [];
+      const reviewerNames = reviewerLabels.length ? reviewerLabels.join(', ') : 'не назначены';
+
+      const authorLabel = await formatGitlabUserLabel(
+        mr.author.gitlabUsername,
+        mr.author.name,
+      );
+
       const approvalsRequired =
         typeof mr.approvalsRequired === 'number' ? mr.approvalsRequired : undefined;
       const approvalsLeft = typeof mr.approvalsLeft === 'number' ? mr.approvalsLeft : undefined;
@@ -115,35 +139,31 @@ export const createBot = (token: string): Telegraf<BotContext> => {
           : approvalsFromReviewers
           ? `Апрувы: ${approvalsFromReviewers}`
           : 'Апрувы: нет данных';
-      const formatUser = (username: string): string => {
-        const mapped = getUserByGitlabUsername(username);
-        return mapped?.telegramUsername ? `@${mapped.telegramUsername}` : username;
-      };
-      const approvedUsers = approvedBy.map(formatUser);
-      const pendingUsers = reviewers.filter((reviewer) => !approvedBy.includes(reviewer)).map(formatUser);
-      const approvedLine = approvedUsers.length ? `Апрувнули: ${approvedUsers.join(', ')}` : 'Апрувнули: —';
-      const pendingLine = pendingUsers.length
-        ? `Ревьюеры без апрува: ${pendingUsers.join(', ')}`
+      const approvedLine = approvedLabels.length
+        ? `Апрувнули: ${approvedLabels.join(', ')}`
+        : 'Апрувнули: —';
+      const pendingLine = pendingLabels.length
+        ? `Ревьюеры без апрува: ${pendingLabels.join(', ')}`
         : reviewers.length
         ? 'Ревьюеры без апрува: —'
         : 'Ревьюеры без апрува: нет данных';
       const parts = [
-        `#${mr.iid}: ${mr.title}`,
-        `Автор: ${authorName}`,
+        `#${mr.iid}: ${escapeHtml(mr.title ?? '—')}`,
+        `Автор: ${authorLabel}`,
         approvalsLine,
         approvedLine,
         pendingLine,
         `Ревьюеры: ${reviewerNames}`,
-        `Линт: ${mr.lastLintStatus ?? 'не запускался'}`,
-        mr.url,
+        `Линт: ${escapeHtml(mr.lastLintStatus ?? 'не запускался')}`,
+        escapeHtml(mr.url),
       ];
       if (mr.taskUrl) {
-        parts.push(`Задача: ${mr.taskUrl}`);
+        parts.push(`Задача: ${escapeHtml(mr.taskUrl)}`);
       }
-      return parts.filter(Boolean).join('\n');
-    });
+      messages.push(parts.filter(Boolean).join('\n'));
+    }
 
-    await ctx.reply(messages.join('\n\n'));
+    await ctx.reply(messages.join('\n\n'), { parse_mode: 'HTML', disable_web_page_preview: true });
   });
 
   return bot;
