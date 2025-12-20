@@ -93,9 +93,24 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     const messages = mergeRequests.map((mr) => {
       const reviewerNames = mr.reviewers?.length ? mr.reviewers.join(', ') : 'не назначены';
       const authorName = mr.author.name ?? mr.author.gitlabUsername ?? '—';
+      const approvalsRequired =
+        typeof mr.approvalsRequired === 'number' ? mr.approvalsRequired : undefined;
+      const approvalsLeft = typeof mr.approvalsLeft === 'number' ? mr.approvalsLeft : undefined;
+      const approvalsGiven =
+        approvalsRequired !== undefined && approvalsLeft !== undefined
+          ? Math.max(approvalsRequired - approvalsLeft, 0)
+          : undefined;
+      const approvalsLine =
+        approvalsRequired !== undefined && approvalsLeft !== undefined
+          ? `Апрувы: ${approvalsGiven}/${approvalsRequired} (осталось ${Math.max(
+              approvalsLeft,
+              0,
+            )})`
+          : 'Апрувы: нет данных';
       const parts = [
         `#${mr.iid}: ${mr.title}`,
         `Автор: ${authorName}`,
+        approvalsLine,
         `Ревьюеры: ${reviewerNames}`,
         `Линт: ${mr.lastLintStatus ?? 'не запускался'}`,
         mr.url,
