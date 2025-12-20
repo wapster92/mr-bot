@@ -27,6 +27,7 @@ export type MergeRequestDocument = {
   createdAt?: Date;
   action?: string;
   reviewers?: string[];
+  approvedBy?: string[];
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
 };

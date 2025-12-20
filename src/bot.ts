@@ -1,5 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
-import { getUserByTelegramUsername, persistUserChatId } from './data/userStore';
+import { getUserByGitlabUsername, getUserByTelegramUsername, persistUserChatId } from './data/userStore';
 import { listActiveMergeRequests } from './data/mergeRequestRepository';
 
 export type BotContext = Context;
@@ -93,6 +93,8 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     const messages = mergeRequests.map((mr) => {
       const reviewerNames = mr.reviewers?.length ? mr.reviewers.join(', ') : 'не назначены';
       const authorName = mr.author.name ?? mr.author.gitlabUsername ?? '—';
+      const reviewers = mr.reviewers ?? [];
+      const approvedBy = mr.approvedBy ?? [];
       const approvalsRequired =
         typeof mr.approvalsRequired === 'number' ? mr.approvalsRequired : undefined;
       const approvalsLeft = typeof mr.approvalsLeft === 'number' ? mr.approvalsLeft : undefined;
@@ -100,17 +102,37 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         approvalsRequired !== undefined && approvalsLeft !== undefined
           ? Math.max(approvalsRequired - approvalsLeft, 0)
           : undefined;
+      const approvalsFromReviewers =
+        approvalsRequired === undefined && approvalsLeft === undefined && reviewers.length
+          ? `${Math.min(approvedBy.length, reviewers.length)}/${reviewers.length}`
+          : undefined;
       const approvalsLine =
         approvalsRequired !== undefined && approvalsLeft !== undefined
           ? `Апрувы: ${approvalsGiven}/${approvalsRequired} (осталось ${Math.max(
               approvalsLeft,
               0,
             )})`
+          : approvalsFromReviewers
+          ? `Апрувы: ${approvalsFromReviewers}`
           : 'Апрувы: нет данных';
+      const formatUser = (username: string): string => {
+        const mapped = getUserByGitlabUsername(username);
+        return mapped?.telegramUsername ? `@${mapped.telegramUsername}` : username;
+      };
+      const approvedUsers = approvedBy.map(formatUser);
+      const pendingUsers = reviewers.filter((reviewer) => !approvedBy.includes(reviewer)).map(formatUser);
+      const approvedLine = approvedUsers.length ? `Апрувнули: ${approvedUsers.join(', ')}` : 'Апрувнули: —';
+      const pendingLine = pendingUsers.length
+        ? `Ревьюеры без апрува: ${pendingUsers.join(', ')}`
+        : reviewers.length
+        ? 'Ревьюеры без апрува: —'
+        : 'Ревьюеры без апрува: нет данных';
       const parts = [
         `#${mr.iid}: ${mr.title}`,
         `Автор: ${authorName}`,
         approvalsLine,
+        approvedLine,
+        pendingLine,
         `Ревьюеры: ${reviewerNames}`,
         `Линт: ${mr.lastLintStatus ?? 'не запускался'}`,
         mr.url,

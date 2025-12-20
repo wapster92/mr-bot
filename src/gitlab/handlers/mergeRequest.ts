@@ -52,15 +52,17 @@ const isDraft = (attrs: any): boolean => {
 export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   const project = payload.project ?? {};
   const attrs = payload.object_attributes ?? {};
-  const gitlabAuthorUsername =
-    payload.object_attributes?.author?.username ?? payload.user?.username;
-  const userRecord = getUserByGitlabUsername(gitlabAuthorUsername);
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
 
-  const author =
-    existingDoc?.author ??
-    {
+  let author = existingDoc?.author ?? {};
+  let gitlabAuthorUsername: string | undefined;
+
+  if (!existingDoc?.author && attrs.action === 'open') {
+    gitlabAuthorUsername =
+      payload.object_attributes?.author?.username ?? payload.user?.username;
+    const userRecord = getUserByGitlabUsername(gitlabAuthorUsername);
+    author = {
       ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
       ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
       ...(payload.object_attributes?.author?.name
@@ -69,6 +71,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         ? { name: payload.user.name }
         : {}),
     };
+  }
 
   const doc: MergeRequestDocument = {
     projectId: project.id,
@@ -118,7 +121,8 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   if (attrs.action === 'open' && !isDraft(attrs)) {
-    const reviewers = await pullReviewers([gitlabAuthorUsername ?? ''].filter(Boolean) as string[]);
+    const reviewerSource = author.gitlabUsername ?? gitlabAuthorUsername ?? '';
+    const reviewers = await pullReviewers([reviewerSource].filter(Boolean) as string[]);
     if (reviewers.length) {
       doc.reviewers = reviewers;
       const reviewerList = reviewers.join(', ');
@@ -147,6 +151,18 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   await upsertMergeRequest(doc);
+
+  if (attrs.action === 'approved' || attrs.action === 'unapproved') {
+    const actorUsername = payload.user?.username;
+    if (actorUsername) {
+      const currentApprovers = existingDoc?.approvedBy ?? [];
+      const nextApprovers =
+        attrs.action === 'approved'
+          ? Array.from(new Set([...currentApprovers, actorUsername]))
+          : currentApprovers.filter((username) => username !== actorUsername);
+      await updateMergeRequest(doc.projectId, doc.iid, { approvedBy: nextApprovers });
+    }
+  }
 
   if (attrs.action === 'close' || attrs.action === 'merge') {
     const leads = getLeadUsers();
