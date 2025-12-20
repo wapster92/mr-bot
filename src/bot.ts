@@ -163,7 +163,10 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       messages.push(parts.filter(Boolean).join('\n'));
     }
 
-    await ctx.reply(messages.join('\n\n'), { parse_mode: 'HTML', disable_web_page_preview: true });
+    await ctx.reply(messages.join('\n\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    });
   });
 
   return bot;

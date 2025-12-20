@@ -159,7 +159,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         if (!chatId) continue;
         await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
           parse_mode: 'HTML',
-          disable_web_page_preview: true,
+          link_preview_options: { is_disabled: true },
         });
       }
       if (doc.author.telegramUsername) {
@@ -167,7 +167,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         if (authorChatId) {
           await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'), {
             parse_mode: 'HTML',
-            disable_web_page_preview: true,
+            link_preview_options: { is_disabled: true },
           });
         }
       }
@@ -209,7 +209,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       if (!chatId) continue;
       await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
         parse_mode: 'HTML',
-        disable_web_page_preview: true,
+        link_preview_options: { is_disabled: true },
       });
     }
     if (doc.author.telegramUsername) {
@@ -217,7 +217,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       if (authorChatId) {
         await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'), {
           parse_mode: 'HTML',
-          disable_web_page_preview: true,
+          link_preview_options: { is_disabled: true },
         });
       }
     }
@@ -249,7 +249,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       }
       await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
         parse_mode: 'HTML',
-        disable_web_page_preview: true,
+        link_preview_options: { is_disabled: true },
       });
     }
     await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
