@@ -37,6 +37,11 @@ if (BOT_MODE === 'webhook' && !TELEGRAM_WEBHOOK_DOMAIN) {
   throw new Error('BOT_MODE is webhook but TELEGRAM_WEBHOOK_DOMAIN is missing.');
 }
 
+const parseBoolean = (value: string | undefined): boolean => {
+  if (!value) return false;
+  return ['1', 'true', 'yes', 'on'].includes(value.trim().toLowerCase());
+};
+
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME ?? 'mr-bot';
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
@@ -61,6 +66,7 @@ export const config = {
   jira: {
     baseUrl: JIRA_BASE_URL,
   },
+  logGitlabEvents: parseBoolean(process.env.LOG_GITLAB_EVENTS),
 } as const;
 
 console.log(config.mode)

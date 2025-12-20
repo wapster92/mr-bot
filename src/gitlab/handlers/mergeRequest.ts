@@ -173,9 +173,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     return;
   }
 
-  const approvalTriggered =
-    (typeof attrs.approvals_left === 'number' && attrs.approvals_left === 0) ||
-    attrs.action === 'approved';
+  const approvalsLeft =
+    typeof attrs.approvals_left === 'number'
+      ? attrs.approvals_left
+      : existingDoc?.approvalsLeft;
+  // Notify only when the MR has zero approvals left; avoid triggering on every single approval event.
+  const approvalTriggered = typeof approvalsLeft === 'number' ? approvalsLeft <= 0 : false;
   if (approvalTriggered && !existingDoc?.finalReviewNotified) {
     const leads = getLeadUsers();
     for (const lead of leads) {

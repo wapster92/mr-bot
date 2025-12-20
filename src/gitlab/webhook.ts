@@ -26,7 +26,7 @@ export const createGitLabWebhookHandler =
     const projectName = payload?.project?.path_with_namespace ?? 'unknown project';
     console.log(`[gitlab] event=${eventType} project=${projectName}`);
 
-    if (process.env.NODE_ENV !== 'production') {
+    if (config.logGitlabEvents) {
       persistGitLabEvent(eventType, payload).catch((error) => {
         console.error('Failed to persist GitLab event', error);
       });
