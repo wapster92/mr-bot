@@ -24,7 +24,7 @@
 docker compose up --build -d
 ```
 
-Переcобрать только код без остановки можно через `docker compose up -d --build bot`, посмотреть логи — `docker compose logs -f bot`, перезапустить — `docker compose restart bot`.
+Пересобрать только код без остановки можно через `docker compose up -d --build bot`, посмотреть логи — `docker compose logs -f bot`, перезапустить — `docker compose restart bot`.
 
 Контейнер слушает `3000`, поэтому Nginx на той же машине просто проксирует HTTPS → `http://localhost:3000`.
 

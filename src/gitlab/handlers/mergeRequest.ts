@@ -58,15 +58,17 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
 
-  const author = {
-    ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
-    ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
-    ...(payload.object_attributes?.author?.name
-      ? { name: payload.object_attributes.author.name }
-      : payload.user?.name
-      ? { name: payload.user.name }
-      : {}),
-  };
+  const author =
+    existingDoc?.author ??
+    {
+      ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
+      ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
+      ...(payload.object_attributes?.author?.name
+        ? { name: payload.object_attributes.author.name }
+        : payload.user?.name
+        ? { name: payload.user.name }
+        : {}),
+    };
 
   const doc: MergeRequestDocument = {
     projectId: project.id,
