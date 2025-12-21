@@ -80,14 +80,15 @@ export const createBot = (token: string): Telegraf<BotContext> => {
                 : {}),
             }
           : undefined;
-        await persistIncomingMessage({
+        const incomingMessage = {
           messageId: message.message_id,
           text: trimmed,
           receivedAt: new Date(),
           isAuthorized: Boolean(allowedUser),
-          from,
-          chat,
-        });
+          ...(from ? { from } : {}),
+          ...(chat ? { chat } : {}),
+        };
+        await persistIncomingMessage(incomingMessage);
       } catch (error) {
         console.error('Failed to persist incoming message', error);
       }
