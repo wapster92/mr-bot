@@ -6,11 +6,98 @@ import {
   persistUserChatId,
 } from './data/userStore';
 import { listActiveMergeRequests } from './data/mergeRequestRepository';
+import { persistIncomingMessage } from './data/incomingMessageRepository';
 
 export type BotContext = Context;
 
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
+
+  const unauthorizedReplies = [
+    'Кажется, я тебя не знаю 😅 Напиши лиду, чтобы добавили в whitelist.',
+    'Тут вход по спискам. Попроси доступ у лида 🙌',
+    'Я бы рад помочь, но тебя нет в списке разрешённых 🤖',
+    'Секретный клуб. Доступ выдаёт лид команды.',
+    'Команды доступны только своим. Проверь доступ у лида.',
+  ];
+  const unauthorizedChatReplies = [
+    'Привет! Я вижу сообщение, но отвечать могу только своим 🙂',
+    'Я пока не знаю тебя. Доступ выдаёт лид команды.',
+    'Это закрытый бот. Попроси доступ у лида 👍',
+    'Сообщение получено. Дальше нужен доступ через whitelist.',
+    'Хм, тебя нет в списке. Напиши лиду, и я отвечу по делу 😉',
+  ];
+
+  const replyUnauthorized = async (ctx: BotContext): Promise<void> => {
+    const message = unauthorizedReplies[Math.floor(Math.random() * unauthorizedReplies.length)];
+    await ctx.reply(message);
+  };
+  const replyUnauthorizedChat = async (ctx: BotContext): Promise<void> => {
+    const message =
+      unauthorizedChatReplies[Math.floor(Math.random() * unauthorizedChatReplies.length)];
+    await ctx.reply(message);
+  };
+
+  bot.use(async (ctx, next) => {
+    const message = ctx.message;
+    const text = message && 'text' in message ? message.text : undefined;
+    if (text) {
+      const trimmed = text.trim();
+      if (!trimmed.startsWith('/')) {
+        const telegramUser = ctx.from;
+        const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+        try {
+          await persistIncomingMessage({
+            messageId: 'message_id' in message ? message.message_id : undefined,
+            text: trimmed,
+            receivedAt: new Date(),
+            isAuthorized: Boolean(allowedUser),
+            from: telegramUser
+              ? {
+                  id: telegramUser.id,
+                  username: telegramUser.username ?? undefined,
+                  firstName: telegramUser.first_name ?? undefined,
+                  lastName: telegramUser.last_name ?? undefined,
+                  isBot: telegramUser.is_bot ?? undefined,
+                }
+              : undefined,
+            chat: ctx.chat
+              ? {
+                  id: ctx.chat.id,
+                  type: ctx.chat.type,
+                  title: 'title' in ctx.chat ? ctx.chat.title ?? undefined : undefined,
+                  username: 'username' in ctx.chat ? ctx.chat.username ?? undefined : undefined,
+                }
+              : undefined,
+          });
+        } catch (error) {
+          console.error('Failed to persist incoming message', error);
+        }
+        if (!allowedUser) {
+          await replyUnauthorizedChat(ctx);
+          return;
+        }
+      }
+    }
+    return next();
+  });
+
+  bot.use(async (ctx, next) => {
+    const message = ctx.message;
+    const text = message && 'text' in message ? message.text : undefined;
+    if (text) {
+      const trimmed = text.trim();
+      if (trimmed.startsWith('/')) {
+        const telegramUser = ctx.from;
+        const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+        if (!allowedUser) {
+          await replyUnauthorized(ctx);
+          return;
+        }
+      }
+    }
+    return next();
+  });
 
   bot.start(async (ctx) => {
     const telegramUser = ctx.from;
