@@ -28,55 +28,72 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     'Хм, тебя нет в списке. Напиши лиду, и я отвечу по делу 😉',
   ];
 
+  const pickRandom = (items: string[], fallback: string): string => {
+    if (!items.length) {
+      return fallback;
+    }
+    return items[Math.floor(Math.random() * items.length)] ?? fallback;
+  };
+
   const replyUnauthorized = async (ctx: BotContext): Promise<void> => {
-    const message = unauthorizedReplies[Math.floor(Math.random() * unauthorizedReplies.length)];
+    const message = pickRandom(
+      unauthorizedReplies,
+      'Доступ закрыт. Попроси доступ у лида.',
+    );
     await ctx.reply(message);
   };
   const replyUnauthorizedChat = async (ctx: BotContext): Promise<void> => {
-    const message =
-      unauthorizedChatReplies[Math.floor(Math.random() * unauthorizedChatReplies.length)];
+    const message = pickRandom(
+      unauthorizedChatReplies,
+      'Я тебя вижу, но отвечаю только своим.',
+    );
     await ctx.reply(message);
   };
 
   bot.use(async (ctx, next) => {
     const message = ctx.message;
-    const text = message && 'text' in message ? message.text : undefined;
-    if (text) {
-      const trimmed = text.trim();
-      if (!trimmed.startsWith('/')) {
-        const telegramUser = ctx.from;
-        const allowedUser = getUserByTelegramUsername(telegramUser?.username);
-        try {
-          await persistIncomingMessage({
-            messageId: 'message_id' in message ? message.message_id : undefined,
-            text: trimmed,
-            receivedAt: new Date(),
-            isAuthorized: Boolean(allowedUser),
-            from: telegramUser
-              ? {
-                  id: telegramUser.id,
-                  username: telegramUser.username ?? undefined,
-                  firstName: telegramUser.first_name ?? undefined,
-                  lastName: telegramUser.last_name ?? undefined,
-                  isBot: telegramUser.is_bot ?? undefined,
-                }
-              : undefined,
-            chat: ctx.chat
-              ? {
-                  id: ctx.chat.id,
-                  type: ctx.chat.type,
-                  title: 'title' in ctx.chat ? ctx.chat.title ?? undefined : undefined,
-                  username: 'username' in ctx.chat ? ctx.chat.username ?? undefined : undefined,
-                }
-              : undefined,
-          });
-        } catch (error) {
-          console.error('Failed to persist incoming message', error);
-        }
-        if (!allowedUser) {
-          await replyUnauthorizedChat(ctx);
-          return;
-        }
+    if (!message || !('text' in message)) {
+      return next();
+    }
+    const text = message.text;
+    const trimmed = text.trim();
+    if (!trimmed.startsWith('/')) {
+      const telegramUser = ctx.from;
+      const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+      try {
+        const from = telegramUser
+          ? {
+              id: telegramUser.id,
+              ...(telegramUser.username ? { username: telegramUser.username } : {}),
+              ...(telegramUser.first_name ? { firstName: telegramUser.first_name } : {}),
+              ...(telegramUser.last_name ? { lastName: telegramUser.last_name } : {}),
+              ...(telegramUser.is_bot !== undefined ? { isBot: telegramUser.is_bot } : {}),
+            }
+          : undefined;
+        const chat = ctx.chat
+          ? {
+              id: ctx.chat.id,
+              type: ctx.chat.type,
+              ...('title' in ctx.chat && ctx.chat.title ? { title: ctx.chat.title } : {}),
+              ...('username' in ctx.chat && ctx.chat.username
+                ? { username: ctx.chat.username }
+                : {}),
+            }
+          : undefined;
+        await persistIncomingMessage({
+          messageId: message.message_id,
+          text: trimmed,
+          receivedAt: new Date(),
+          isAuthorized: Boolean(allowedUser),
+          from,
+          chat,
+        });
+      } catch (error) {
+        console.error('Failed to persist incoming message', error);
+      }
+      if (!allowedUser) {
+        await replyUnauthorizedChat(ctx);
+        return;
       }
     }
     return next();
@@ -84,16 +101,16 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.use(async (ctx, next) => {
     const message = ctx.message;
-    const text = message && 'text' in message ? message.text : undefined;
-    if (text) {
-      const trimmed = text.trim();
-      if (trimmed.startsWith('/')) {
-        const telegramUser = ctx.from;
-        const allowedUser = getUserByTelegramUsername(telegramUser?.username);
-        if (!allowedUser) {
-          await replyUnauthorized(ctx);
-          return;
-        }
+    if (!message || !('text' in message)) {
+      return next();
+    }
+    const trimmed = message.text.trim();
+    if (trimmed.startsWith('/')) {
+      const telegramUser = ctx.from;
+      const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+      if (!allowedUser) {
+        await replyUnauthorized(ctx);
+        return;
       }
     }
     return next();
