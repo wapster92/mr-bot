@@ -1,5 +1,5 @@
 import { Context, Telegraf } from 'telegraf';
-import { getUserByTelegramUsername, persistUserChatId } from './data/userStore';
+import { getUserByTelegramUsername, persistUserChatId, upsertAllowedUser } from './data/userStore';
 import { listActiveMergeRequests } from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
@@ -54,6 +54,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         '/status — базовая проверка доступности бота',
         '/review — заглушка: в будущем покажет MR, где нужен ревьюер',
         '/mrs — показать активные MR и их статус',
+        '/allow — добавить пользователя в whitelist (только лиды)',
       ].join('\n'),
     ),
   );
@@ -62,6 +63,38 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.command('review', (ctx) => {
     ctx.reply('Пока я только заготовка 🙈. Скоро научусь собирать MR без ревью.');
+  });
+
+  bot.command('allow', async (ctx) => {
+    const actor = await getUserByTelegramUsername(ctx.from?.username);
+    if (!actor?.isLead) {
+      await ctx.reply('Команда доступна только лидам.');
+      return;
+    }
+
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const parts = text.split(' ').filter(Boolean);
+    if (parts.length < 3) {
+      await ctx.reply('Формат: /allow @telegramUsername gitlab.username [Имя Фамилия]');
+      return;
+    }
+
+    const telegramRaw = parts[1] ?? '';
+    const gitlabUsername = parts[2];
+    const telegramUsername = telegramRaw.startsWith('@') ? telegramRaw.slice(1) : telegramRaw;
+    const name = parts.slice(3).join(' ') || undefined;
+
+    if (!telegramUsername || !gitlabUsername) {
+      await ctx.reply('Нужны @telegramUsername и gitlab.username.');
+      return;
+    }
+
+    await upsertAllowedUser({
+      telegramUsername,
+      gitlabUsername,
+      ...(name ? { name } : {}),
+    });
+    await ctx.reply(`Пользователь @${telegramUsername} добавлен в whitelist.`);
   });
 
   bot.command('whoami', async (ctx) => {

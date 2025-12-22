@@ -88,6 +88,34 @@ export const persistUserChatId = async (
   );
 };
 
+export const upsertAllowedUser = async (input: {
+  telegramUsername: string;
+  gitlabUsername: string;
+  name?: string;
+}): Promise<void> => {
+  const collection = await getCollection();
+  await collection.updateOne(
+    { gitlabUsernameLower: normalizeUsername(input.gitlabUsername) },
+    {
+      $set: {
+        gitlabUsername: input.gitlabUsername,
+        gitlabUsernameLower: normalizeUsername(input.gitlabUsername),
+        telegramUsername: input.telegramUsername,
+        telegramUsernameLower: normalizeUsername(input.telegramUsername),
+        ...(input.name ? { name: input.name } : {}),
+        isAllowed: true,
+        updatedAt: new Date(),
+      },
+      $setOnInsert: {
+        isActive: true,
+        isLead: false,
+        createdAt: new Date(),
+      },
+    },
+    { upsert: true },
+  );
+};
+
 export const getUserChatId = async (telegramUserId: number): Promise<number | undefined> => {
   const collection = await getCollection();
   const doc = await collection.findOne({ telegramUserId, isAllowed: true });

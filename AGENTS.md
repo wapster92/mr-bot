@@ -6,7 +6,7 @@
 - Messaging: `src/messages/` contains HTML formatting, templates, and reply pools; `src/services/` builds summaries (e.g., `/mrs`).
 - Middleware: `src/middleware/` handles incoming message logging and auth gates.
 - GitLab integration: `src/gitlab/webhook.ts` builds the webhook endpoint; events can be persisted via `src/gitlab/eventStore.ts` (logs land in `logs/gitlab-events/`).
-- User data now lives in Mongo `users` (whitelist, roles, work hours); `src/data/users.ts` is seed-only.
+- User data now lives in Mongo `users` (whitelist, roles, work hours).
 - Static data/helpers: `src/data/*.ts` holds reviewer queues and repositories; adjust these before shipping.
 - Deployment assets live in `deploy/` (e.g., `nginx.conf`), docs in `docs/`, and compiled output in `dist/` after building.
 
