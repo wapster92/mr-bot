@@ -2,7 +2,9 @@
 
 ## Project Structure & Module Organization
 - Core entry: `src/index.ts` wires Express, bot startup mode (long-polling vs webhook), and lifecycle signals.
-- Bot logic: `src/bot.ts` defines handlers; `src/config.ts` parses env-driven settings; Mongo helpers in `src/db/mongo.ts`.
+- Bot logic: `src/bot.ts` wires middleware and commands; `src/config.ts` parses env-driven settings; Mongo helpers in `src/db/mongo.ts`.
+- Messaging: `src/messages/` contains HTML formatting, templates, and reply pools; `src/services/` builds summaries (e.g., `/mrs`).
+- Middleware: `src/middleware/` handles incoming message logging and auth gates.
 - GitLab integration: `src/gitlab/webhook.ts` builds the webhook endpoint; events can be persisted via `src/gitlab/eventStore.ts` (logs land in `logs/gitlab-events/`).
 - Static data/helpers: `src/data/*.ts` holds whitelists, reviewer queues, and repositories; adjust these before shipping.
 - Deployment assets live in `deploy/` (e.g., `nginx.conf`), docs in `docs/`, and compiled output in `dist/` after building.

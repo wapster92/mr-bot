@@ -3,7 +3,7 @@ import { escapeHtml } from './format';
 type MergeRequestMessageInput = {
   title: string;
   url: string;
-  taskUrl?: string;
+  taskUrl?: string | undefined;
 };
 
 const buildMrParts = (input: MergeRequestMessageInput, header: string): string[] => {
