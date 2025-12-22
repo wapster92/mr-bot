@@ -5,14 +5,16 @@ import {
   findMergeRequest,
   updateMergeRequest,
 } from '../../data/mergeRequestRepository';
+import { getUserByGitlabUsername } from '../../data/userStore';
+import { formatGitlabUserLabel } from '../../messages/format';
 import {
-  getLeadUsers,
-  getUserByGitlabUsername,
-  getChatIdByUsername,
-  escapeHtml,
-  formatGitlabUserLabel,
-  upsertGitlabUserProfile,
-} from '../../data/userStore';
+  buildFinalReviewMessage,
+  buildMergeRequestClosedMessage,
+  buildMergeRequestCreatedMessage,
+} from '../../messages/templates';
+import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
+import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
+import { persistGitlabUserProfileFromPayload } from './common';
 import { pullReviewers } from '../../data/reviewerQueue';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
@@ -59,13 +61,7 @@ const isDraft = (attrs: any): boolean => {
 export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   const project = payload.project ?? {};
   const attrs = payload.object_attributes ?? {};
-  if (payload.user?.username && payload.user?.name) {
-    try {
-      await upsertGitlabUserProfile(payload.user.username, payload.user.name);
-    } catch (error) {
-      console.warn('[gitlab] Failed to store user profile', error);
-    }
-  }
+  await persistGitlabUserProfileFromPayload(payload);
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
 
@@ -144,32 +140,19 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       );
       const reviewerList = reviewerLabels.join(', ');
       const authorLabel = await formatGitlabUserLabel(author.gitlabUsername, author.name);
-      const parts = [
-        `🆕 Создан MR "${escapeHtml(doc.title)}" от ${authorLabel}.`,
-        `Ревьюеры: ${reviewerList}`,
-        escapeHtml(doc.url),
-      ];
-      if (doc.taskUrl) {
-        parts.push(`Задача: ${escapeHtml(doc.taskUrl)}`);
-      }
-      const leads = getLeadUsers();
-      for (const lead of leads) {
-        if (!lead.telegramUsername) continue;
-        const chatId = await getChatIdByUsername(lead.telegramUsername);
-        if (!chatId) continue;
-        await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-        });
-      }
-      if (doc.author.telegramUsername) {
-        const authorChatId = await getChatIdByUsername(doc.author.telegramUsername);
-        if (authorChatId) {
-          await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'), {
-            parse_mode: 'HTML',
-            link_preview_options: { is_disabled: true },
-          });
-        }
+      const message = buildMergeRequestCreatedMessage({
+        title: doc.title ?? '—',
+        authorLabel,
+        reviewerList,
+        url: doc.url ?? '—',
+        taskUrl: doc.taskUrl,
+      });
+      await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
+      const authorChatId = doc.author.gitlabUsername
+        ? await getChatIdByGitlabUsername(doc.author.gitlabUsername)
+        : undefined;
+      if (authorChatId) {
+        await sendHtmlMessage(bot, authorChatId, message);
       }
     }
   }
@@ -189,37 +172,26 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   if (attrs.action === 'close' || attrs.action === 'merge') {
-    const leads = getLeadUsers();
     const closerName = await formatGitlabUserLabel(payload.user?.username, payload.user?.name);
     const originalAuthorName = await formatGitlabUserLabel(
       doc.author.gitlabUsername,
       doc.author.name,
     );
     const actionText = attrs.action === 'merge' ? 'слит' : 'закрыт';
-    const parts = [
-      `ℹ️ MR "${escapeHtml(doc.title)}" был ${actionText}. Автор MR: ${originalAuthorName}. Действие выполнил: ${closerName}.`,
-      escapeHtml(doc.url),
-    ];
-    if (doc.taskUrl) {
-      parts.push(`Задача: ${escapeHtml(doc.taskUrl)}`);
-    }
-    for (const lead of leads) {
-      if (!lead.telegramUsername) continue;
-      const chatId = await getChatIdByUsername(lead.telegramUsername);
-      if (!chatId) continue;
-      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
-        parse_mode: 'HTML',
-        link_preview_options: { is_disabled: true },
-      });
-    }
-    if (doc.author.telegramUsername) {
-      const authorChatId = await getChatIdByUsername(doc.author.telegramUsername);
-      if (authorChatId) {
-        await bot.telegram.sendMessage(authorChatId, parts.filter(Boolean).join('\n'), {
-          parse_mode: 'HTML',
-          link_preview_options: { is_disabled: true },
-        });
-      }
+    const message = buildMergeRequestClosedMessage({
+      title: doc.title ?? '—',
+      actionText,
+      authorLabel: originalAuthorName,
+      closerLabel: closerName,
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
+    const authorChatId = doc.author.gitlabUsername
+      ? await getChatIdByGitlabUsername(doc.author.gitlabUsername)
+      : undefined;
+    if (authorChatId) {
+      await sendHtmlMessage(bot, authorChatId, message);
     }
     return;
   }
@@ -231,27 +203,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   // Notify only when the MR has zero approvals left; avoid triggering on every single approval event.
   const approvalTriggered = typeof approvalsLeft === 'number' ? approvalsLeft <= 0 : false;
   if (approvalTriggered && !existingDoc?.finalReviewNotified) {
-    const leads = getLeadUsers();
-    for (const lead of leads) {
-      if (!lead.telegramUsername) {
-        continue;
-      }
-      const chatId = await getChatIdByUsername(lead.telegramUsername);
-      if (!chatId) {
-        continue;
-      }
-      const parts = [
-        `✅ MR "${escapeHtml(doc.title)}" набрал все апрувы. Проведи финальную проверку.`,
-        escapeHtml(doc.url),
-      ];
-      if (doc.taskUrl) {
-        parts.push(`Задача: ${escapeHtml(doc.taskUrl)}`);
-      }
-      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'), {
-        parse_mode: 'HTML',
-        link_preview_options: { is_disabled: true },
-      });
-    }
+    const message = buildFinalReviewMessage({
+      title: doc.title ?? '—',
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
     await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
   }
 };

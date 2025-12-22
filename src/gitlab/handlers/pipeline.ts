@@ -1,7 +1,14 @@
 import { findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
-import { getChatIdByUsername, getUserByGitlabUsername, getLeadUsers } from '../../data/userStore';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
+import { persistGitlabUserProfileFromPayload } from './common';
+import {
+  buildLintFailedMessage,
+  buildLintPassedLeadMessage,
+  buildLintPassedMessage,
+} from '../../messages/templates';
+import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
+import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
 
 const isLintPipeline = (payload: any): boolean => {
   const attrs = payload.object_attributes ?? {};
@@ -24,6 +31,7 @@ const getMergeRequestInfo = (payload: any): { projectId?: number; iid?: number }
 };
 
 export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+  await persistGitlabUserProfileFromPayload(payload);
   const attrs = payload.object_attributes ?? {};
   if (attrs.source !== 'merge_request_event') {
     return;
@@ -54,26 +62,18 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       return;
     }
 
-    const userRecord = getUserByGitlabUsername(authorUsername);
-    if (!userRecord?.telegramUsername) {
+    const authorChatId = await getChatIdByGitlabUsername(authorUsername);
+    if (!authorChatId) {
       console.warn(`[pipeline] Cannot notify MR author: ${authorUsername} not mapped to Telegram`);
       return;
     }
-    const chatId = await getChatIdByUsername(userRecord.telegramUsername);
-    if (!chatId) {
-      console.warn(`[pipeline] Chat ID not found for ${userRecord.telegramUsername}`);
-      return;
-    }
 
-    const parts = [
-      `🚫 Линт упал в MR "${doc.title}". Проверь пайплайн и исправь ошибки.`,
-      doc.url,
-    ];
-    if (doc.taskUrl) {
-      parts.push(`Задача: ${doc.taskUrl}`);
-    }
-
-    await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+    const message = buildLintFailedMessage({
+      title: doc.title ?? '—',
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await sendHtmlMessage(bot, authorChatId, message);
     return;
   }
 
@@ -84,41 +84,25 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       return;
     }
 
-    const leads = getLeadUsers();
-    for (const lead of leads) {
-      if (!lead.telegramUsername) continue;
-      const chatId = await getChatIdByUsername(lead.telegramUsername);
-      if (!chatId) continue;
-      const parts = [
-        `ℹ️ MR "${doc.title}" прошёл линт.`,
-        doc.url,
-      ];
-      if (doc.taskUrl) {
-        parts.push(`Задача: ${doc.taskUrl}`);
-      }
-      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
-    }
+    const leadsMessage = buildLintPassedLeadMessage({
+      title: doc.title ?? '—',
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await sendHtmlMessageToChats(bot, await getLeadChatIds(), leadsMessage);
 
     for (const reviewer of reviewers) {
-      const userRecord = getUserByGitlabUsername(reviewer);
-      if (!userRecord?.telegramUsername) {
+      const chatId = await getChatIdByGitlabUsername(reviewer);
+      if (!chatId) {
         console.warn(`[pipeline] Cannot notify reviewer ${reviewer}: no Telegram mapping`);
         continue;
       }
-      const chatId = await getChatIdByUsername(userRecord.telegramUsername);
-      if (!chatId) {
-        console.warn(`[pipeline] Chat ID not found for ${userRecord.telegramUsername}`);
-        continue;
-      }
-
-      const parts = [
-        `✅ MR "${doc.title}" прошёл линт. Пора провести ревью.`,
-        doc.url,
-      ];
-      if (doc.taskUrl) {
-        parts.push(`Задача: ${doc.taskUrl}`);
-      }
-      await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+      const message = buildLintPassedMessage({
+        title: doc.title ?? '—',
+        url: doc.url ?? '—',
+        taskUrl: doc.taskUrl,
+      });
+      await sendHtmlMessage(bot, chatId, message);
     }
   }
 };

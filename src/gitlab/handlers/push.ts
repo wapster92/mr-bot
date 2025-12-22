@@ -1,7 +1,10 @@
 import { findMergeRequestByBranch } from '../../data/mergeRequestRepository';
-import { getChatIdByUsername, getUserByGitlabUsername } from '../../data/userStore';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
+import { persistGitlabUserProfileFromPayload } from './common';
+import { buildPushUpdateMessage } from '../../messages/templates';
+import { sendHtmlMessage } from '../../messages/send';
+import { getChatIdByGitlabUsername } from '../../messages/recipients';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -11,6 +14,7 @@ const normalizeRef = (ref?: string): string | undefined => {
 };
 
 export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+  await persistGitlabUserProfileFromPayload(payload);
   const branch = normalizeRef(payload.ref);
   if (!branch) {
     return;
@@ -31,23 +35,16 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
   }
 
   for (const reviewer of doc.reviewers) {
-    const userRecord = getUserByGitlabUsername(reviewer);
-    if (!userRecord?.telegramUsername) {
-      continue;
-    }
-    const chatId = await getChatIdByUsername(userRecord.telegramUsername);
+    const chatId = await getChatIdByGitlabUsername(reviewer);
     if (!chatId) {
       continue;
     }
 
-    const parts = [
-      `✏️ В MR "${doc.title}" появились новые коммиты. Проверь обновления.`,
-      doc.url,
-    ];
-    if (doc.taskUrl) {
-      parts.push(`Задача: ${doc.taskUrl}`);
-    }
-
-    await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+    const message = buildPushUpdateMessage({
+      title: doc.title ?? '—',
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await sendHtmlMessage(bot, chatId, message);
   }
 };

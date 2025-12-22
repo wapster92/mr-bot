@@ -1,9 +1,13 @@
-import { getChatIdByUsername, getUserByGitlabUsername } from '../../data/userStore';
 import { findMergeRequest } from '../../data/mergeRequestRepository';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
+import { persistGitlabUserProfileFromPayload } from './common';
+import { buildMergeRequestCommentMessage } from '../../messages/templates';
+import { sendHtmlMessage } from '../../messages/send';
+import { getChatIdByGitlabUsername } from '../../messages/recipients';
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+  await persistGitlabUserProfileFromPayload(payload);
   if (payload.object_attributes?.noteable_type !== 'MergeRequest') {
     return;
   }
@@ -29,29 +33,21 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     return;
   }
 
-  const userRecord = getUserByGitlabUsername(authorGitlab);
-  if (!userRecord?.telegramUsername) {
-    console.warn('[note] No Telegram mapping for MR author', authorGitlab);
-    return;
-  }
-
-  const chatId = await getChatIdByUsername(userRecord.telegramUsername);
+  const chatId = await getChatIdByGitlabUsername(authorGitlab);
   if (!chatId) {
-    console.warn('[note] Chat ID not found for', userRecord.telegramUsername);
+    console.warn('[note] No Telegram mapping for MR author', authorGitlab);
     return;
   }
 
   const noteText = payload.object_attributes?.note ?? '';
   const commenterName = payload.user?.name ?? commenter ?? 'Ревьюер';
 
-  const parts = [
-    `💬 ${commenterName} оставил комментарий в MR "${doc.title}":`,
+  const message = buildMergeRequestCommentMessage({
+    title: doc.title ?? '—',
+    url: doc.url ?? '—',
+    taskUrl: doc.taskUrl,
+    commenterName,
     noteText,
-    doc.url,
-  ];
-  if (doc.taskUrl) {
-    parts.push(`Задача: ${doc.taskUrl}`);
-  }
-
-  await bot.telegram.sendMessage(chatId, parts.filter(Boolean).join('\n'));
+  });
+  await sendHtmlMessage(bot, chatId, message);
 };
