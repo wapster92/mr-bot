@@ -11,8 +11,8 @@ import {
   buildMergeRequestClosedMessage,
   buildMergeRequestCreatedMessage,
 } from '../../messages/templates';
-import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
-import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
+import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
+import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { pullReviewers } from '../../data/reviewerQueue';
 import type { Telegraf } from 'telegraf';
@@ -154,12 +154,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         url: doc.url ?? '—',
         taskUrl: doc.taskUrl,
       });
-      await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
-      const authorChatId = doc.author.gitlabUsername
-        ? await getChatIdByGitlabUsername(doc.author.gitlabUsername)
+      await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
+      const authorRecipient = doc.author.gitlabUsername
+        ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
         : undefined;
-      if (authorChatId) {
-        await sendHtmlMessage(bot, authorChatId, message);
+      if (authorRecipient) {
+        await deliverHtmlMessage(bot, authorRecipient, message);
       }
     }
   }
@@ -194,12 +194,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
-    const authorChatId = doc.author.gitlabUsername
-      ? await getChatIdByGitlabUsername(doc.author.gitlabUsername)
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
+    const authorRecipient = doc.author.gitlabUsername
+      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
-    if (authorChatId) {
-      await sendHtmlMessage(bot, authorChatId, message);
+    if (authorRecipient) {
+      await deliverHtmlMessage(bot, authorRecipient, message);
     }
     return;
   }
@@ -227,7 +227,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
     await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
   }
 };

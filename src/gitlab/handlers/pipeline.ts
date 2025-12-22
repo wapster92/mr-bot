@@ -7,8 +7,8 @@ import {
   buildLintPassedLeadMessage,
   buildLintPassedMessage,
 } from '../../messages/templates';
-import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
-import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
+import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
+import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 
 const isLintPipeline = (payload: any): boolean => {
   const attrs = payload.object_attributes ?? {};
@@ -62,8 +62,8 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       return;
     }
 
-    const authorChatId = await getChatIdByGitlabUsername(authorUsername);
-    if (!authorChatId) {
+    const authorRecipient = await getRecipientByGitlabUsername(authorUsername);
+    if (!authorRecipient) {
       console.warn(`[pipeline] Cannot notify MR author: ${authorUsername} not mapped to Telegram`);
       return;
     }
@@ -73,7 +73,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await sendHtmlMessage(bot, authorChatId, message);
+    await deliverHtmlMessage(bot, authorRecipient, message);
     return;
   }
 
@@ -89,11 +89,11 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await sendHtmlMessageToChats(bot, await getLeadChatIds(), leadsMessage);
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), leadsMessage);
 
     for (const reviewer of reviewers) {
-      const chatId = await getChatIdByGitlabUsername(reviewer);
-      if (!chatId) {
+      const reviewerRecipient = await getRecipientByGitlabUsername(reviewer);
+      if (!reviewerRecipient) {
         console.warn(`[pipeline] Cannot notify reviewer ${reviewer}: no Telegram mapping`);
         continue;
       }
@@ -102,7 +102,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
         url: doc.url ?? '—',
         taskUrl: doc.taskUrl,
       });
-      await sendHtmlMessage(bot, chatId, message);
+      await deliverHtmlMessage(bot, reviewerRecipient, message);
     }
   }
 };

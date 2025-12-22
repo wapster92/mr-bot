@@ -3,8 +3,8 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildMergeRequestCommentMessage } from '../../messages/templates';
-import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
-import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
+import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
+import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
@@ -33,8 +33,8 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     return;
   }
 
-  const chatId = await getChatIdByGitlabUsername(authorGitlab);
-  if (!chatId) {
+  const authorRecipient = await getRecipientByGitlabUsername(authorGitlab);
+  if (!authorRecipient) {
     console.warn('[note] No Telegram mapping for MR author', authorGitlab);
     return;
   }
@@ -49,6 +49,6 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     commenterName,
     noteText,
   });
-  await sendHtmlMessage(bot, chatId, message);
-  await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
+  await deliverHtmlMessage(bot, authorRecipient, message);
+  await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
 };

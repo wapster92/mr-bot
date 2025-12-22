@@ -3,8 +3,8 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildPushUpdateMessage } from '../../messages/templates';
-import { sendHtmlMessage } from '../../messages/send';
-import { getChatIdByGitlabUsername } from '../../messages/recipients';
+import { deliverHtmlMessage } from '../../messages/send';
+import { getRecipientByGitlabUsername } from '../../messages/recipients';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -35,8 +35,8 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
   }
 
   for (const reviewer of doc.reviewers) {
-    const chatId = await getChatIdByGitlabUsername(reviewer);
-    if (!chatId) {
+    const reviewerRecipient = await getRecipientByGitlabUsername(reviewer);
+    if (!reviewerRecipient) {
       continue;
     }
 
@@ -45,6 +45,6 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await sendHtmlMessage(bot, chatId, message);
+    await deliverHtmlMessage(bot, reviewerRecipient, message);
   }
 };

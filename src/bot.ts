@@ -4,11 +4,18 @@ import { listActiveMergeRequests } from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
 import { buildMergeRequestMessages } from './services/mrSummary';
+import { flushNotificationQueue } from './services/notificationQueue';
 
 export type BotContext = Context;
 
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
+  const queueFlushIntervalMs = 60_000;
+  setInterval(() => {
+    void flushNotificationQueue(bot).catch((error) => {
+      console.error('Failed to flush notification queue', error);
+    });
+  }, queueFlushIntervalMs);
 
   bot.use(incomingLogMiddleware());
   bot.use(commandAuthMiddleware());

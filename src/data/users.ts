@@ -8,11 +8,19 @@ export type UserRecord = {
   gitlabUsername?: string;
   isActive?: boolean;
   isLead?: boolean;
+  workHours?: {
+    start: string;
+    end: string;
+    timezone?: string;
+  };
+  ignoreWorkHours?: boolean;
 };
 
 /**
  * Список разрешённых пользователей. Заполни недостающие поля (ID, чаты, почты),
  * чтобы бот мог фильтровать и отправлять персональные уведомления.
+ * Если сотрудник в отпуске — поставь isActive: false, тогда он не попадёт в очередь ревью.
+ * Для исключений по графику можно указать workHours (например, { start: "10:00", end: "19:00", timezone: "Europe/Moscow" }).
  */
 export const users: UserRecord[] = [
   {
@@ -21,6 +29,7 @@ export const users: UserRecord[] = [
     gitlabEmail: '',
     gitlabUsername: 'tursunbaev.ti',
     isLead: true,
+    ignoreWorkHours: true,
   },
   {
     telegramUsername: 'and_lap',
