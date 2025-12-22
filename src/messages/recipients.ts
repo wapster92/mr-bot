@@ -1,5 +1,5 @@
-import { getChatIdByUsername, getLeadUsers, getUserByGitlabUsername } from '../data/userStore';
-import type { UserRecord } from '../data/users';
+import { getChatIdByUsername, listLeadUsers, getUserByGitlabUsername } from '../data/userStore';
+import type { UserRecord } from '../data/userTypes';
 
 const DEFAULT_WORK_START = '09:00';
 const DEFAULT_WORK_END = '18:00';
@@ -80,7 +80,7 @@ const toRecipient = async (
 };
 
 export const getLeadChatIds = async (): Promise<number[]> => {
-  const leads = getLeadUsers();
+  const leads = await listLeadUsers();
   const chatIds: number[] = [];
   const now = new Date();
   for (const lead of leads) {
@@ -95,7 +95,7 @@ export const getLeadChatIds = async (): Promise<number[]> => {
 };
 
 export const getLeadRecipients = async (): Promise<DeliveryRecipient[]> => {
-  const leads = getLeadUsers();
+  const leads = await listLeadUsers();
   const now = new Date();
   const recipients: DeliveryRecipient[] = [];
   for (const lead of leads) {
@@ -110,7 +110,7 @@ export const getLeadRecipients = async (): Promise<DeliveryRecipient[]> => {
 export const getChatIdByGitlabUsername = async (
   gitlabUsername: string,
 ): Promise<number | undefined> => {
-  const userRecord = getUserByGitlabUsername(gitlabUsername);
+  const userRecord = await getUserByGitlabUsername(gitlabUsername);
   if (!userRecord?.telegramUsername) {
     return undefined;
   }
@@ -123,7 +123,7 @@ export const getChatIdByGitlabUsername = async (
 export const getRecipientByGitlabUsername = async (
   gitlabUsername: string,
 ): Promise<DeliveryRecipient | undefined> => {
-  const userRecord = getUserByGitlabUsername(gitlabUsername);
+  const userRecord = await getUserByGitlabUsername(gitlabUsername);
   if (!userRecord) {
     return undefined;
   }

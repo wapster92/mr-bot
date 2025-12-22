@@ -16,7 +16,7 @@ export const incomingLogMiddleware = (): MiddlewareFn<BotContext> => async (ctx,
   }
 
   const telegramUser = ctx.from;
-  const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+  const allowedUser = await getUserByTelegramUsername(telegramUser?.username);
   try {
     const from = telegramUser
       ? {

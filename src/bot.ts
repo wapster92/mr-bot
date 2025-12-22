@@ -27,7 +27,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       return;
     }
 
-    const allowedUser = getUserByTelegramUsername(telegramUser.username);
+    const allowedUser = await getUserByTelegramUsername(telegramUser.username);
     if (!allowedUser) {
       await ctx.reply('Привет! Похоже, тебя ещё нет в списке разрешённых пользователей.');
       return;
@@ -64,9 +64,9 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     ctx.reply('Пока я только заготовка 🙈. Скоро научусь собирать MR без ревью.');
   });
 
-  bot.command('whoami', (ctx) => {
+  bot.command('whoami', async (ctx) => {
     const telegramUser = ctx.from;
-    const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+    const allowedUser = await getUserByTelegramUsername(telegramUser?.username);
 
     if (!telegramUser) {
       ctx.reply('Не могу определить твой профиль 😕.');
@@ -83,15 +83,15 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       `Username: @${telegramUser.username ?? '—'}`,
       `Имя: ${telegramUser.first_name ?? '—'}`,
       `Фамилия: ${telegramUser.last_name ?? '—'}`,
-      `GitLab email: ${allowedUser.gitlabEmail ?? '—'}`,
       `GitLab username: ${allowedUser.gitlabUsername ?? '—'}`,
+      `GitLab name: ${allowedUser.name ?? '—'}`,
     ];
 
     ctx.reply(['Ты в whitelist ✅', ...info].join('\n'));
   });
 
   bot.command('mrs', async (ctx) => {
-    const user = getUserByTelegramUsername(ctx.from?.username);
+    const user = await getUserByTelegramUsername(ctx.from?.username);
     if (!user) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
       return;

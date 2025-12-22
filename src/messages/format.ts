@@ -16,11 +16,10 @@ export const formatGitlabUserLabel = async (
   }
 
   const profile = await getGitlabUserProfile(username);
-  const mapped = getUserByGitlabUsername(username);
+  const mapped = await getUserByGitlabUsername(username);
   const displayName =
     profile?.name ||
     fallbackName ||
-    [mapped?.firstName, mapped?.lastName].filter(Boolean).join(' ') ||
     mapped?.telegramUsername ||
     username;
 

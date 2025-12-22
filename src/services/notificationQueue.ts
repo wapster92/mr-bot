@@ -15,9 +15,9 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
   for (const item of queued) {
     const userRecord =
       (item.telegramUsername
-        ? getUserByTelegramUsername(item.telegramUsername)
+        ? await getUserByTelegramUsername(item.telegramUsername)
         : undefined) ??
-      (item.gitlabUsername ? getUserByGitlabUsername(item.gitlabUsername) : undefined);
+      (item.gitlabUsername ? await getUserByGitlabUsername(item.gitlabUsername) : undefined);
 
     if (userRecord && !isWithinWorkingHours(userRecord, now)) {
       continue;

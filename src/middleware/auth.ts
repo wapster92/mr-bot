@@ -15,7 +15,7 @@ export const commandAuthMiddleware = (): MiddlewareFn<BotContext> => async (ctx,
   }
 
   const telegramUser = ctx.from;
-  const allowedUser = getUserByTelegramUsername(telegramUser?.username);
+  const allowedUser = await getUserByTelegramUsername(telegramUser?.username);
   if (!allowedUser) {
     await ctx.reply(getUnauthorizedCommandReply());
     return;

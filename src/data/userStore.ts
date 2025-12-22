@@ -1,52 +1,68 @@
-import type { Collection, WithId } from 'mongodb';
+import type { Collection } from 'mongodb';
 import { getDb } from '../db/mongo';
-import { users, type UserRecord } from './users';
+import type { UserRecord } from './userTypes';
 
-type UserChatDocument = {
-  telegramUserId: number;
-  chatId: number;
-  telegramUsername?: string;
+export type UserDocument = UserRecord & {
+  gitlabUsernameLower: string;
   telegramUsernameLower?: string;
 };
 
-type GitlabUserDocument = {
-  username: string;
-  usernameLower: string;
-  name?: string;
-  updatedAt: Date;
-};
-
-const COLLECTION_NAME = 'user_chats';
-const GITLAB_USERS_COLLECTION = 'gitlab_users';
+const COLLECTION_NAME = 'users';
 
 const normalizeUsername = (username: string): string => username.toLowerCase();
 
-const getCollection = async (): Promise<Collection<UserChatDocument>> => {
+const getCollection = async (): Promise<Collection<UserDocument>> => {
   const db = await getDb();
-  return db.collection<UserChatDocument>(COLLECTION_NAME);
+  return db.collection<UserDocument>(COLLECTION_NAME);
 };
 
-const getGitlabUsersCollection = async (): Promise<Collection<GitlabUserDocument>> => {
-  const db = await getDb();
-  const collection = db.collection<GitlabUserDocument>(GITLAB_USERS_COLLECTION);
-  await collection.createIndex({ usernameLower: 1 }, { unique: true });
-  return collection;
-};
-
-export const getUserByTelegramUsername = (username?: string): UserRecord | undefined => {
+export const getUserByTelegramUsername = async (
+  username?: string,
+): Promise<UserDocument | undefined> => {
   if (!username) {
     return undefined;
   }
-
-  return users.find((user) => user.telegramUsername.toLowerCase() === username.toLowerCase());
+  const collection = await getCollection();
+  return (
+    (await collection.findOne({
+      telegramUsernameLower: normalizeUsername(username),
+      isAllowed: true,
+    })) ?? undefined
+  );
 };
 
-export const getUserByGitlabUsername = (username?: string): UserRecord | undefined => {
+export const getUserByGitlabUsername = async (
+  username?: string,
+): Promise<UserDocument | undefined> => {
   if (!username) {
     return undefined;
   }
+  const collection = await getCollection();
+  return (
+    (await collection.findOne({
+      gitlabUsernameLower: normalizeUsername(username),
+      isAllowed: true,
+    })) ?? undefined
+  );
+};
 
-  return users.find((user) => user.gitlabUsername?.toLowerCase() === username.toLowerCase());
+export const listLeadUsers = async (): Promise<UserDocument[]> => {
+  const collection = await getCollection();
+  return collection.find({ isLead: true, isAllowed: true }).toArray();
+};
+
+export const listActiveReviewers = async (): Promise<string[]> => {
+  const collection = await getCollection();
+  const docs = await collection
+    .find({
+      isAllowed: true,
+      isLead: { $ne: true },
+      isActive: { $ne: false },
+      gitlabUsername: { $type: 'string' },
+    })
+    .project({ gitlabUsername: 1 })
+    .toArray();
+  return docs.map((doc) => doc.gitlabUsername).filter(Boolean);
 };
 
 export const persistUserChatId = async (
@@ -54,38 +70,41 @@ export const persistUserChatId = async (
   chatId: number,
   username?: string,
 ): Promise<void> => {
-  const collection = await getCollection();
-  const updateDoc: Record<string, unknown> = {
-    telegramUserId,
-    chatId,
-  };
-
-  if (username) {
-    updateDoc.telegramUsername = username;
-    updateDoc.telegramUsernameLower = normalizeUsername(username);
+  if (!username) {
+    return;
   }
-
+  const collection = await getCollection();
   await collection.updateOne(
-    { telegramUserId },
+    { telegramUsernameLower: normalizeUsername(username), isAllowed: true },
     {
-      $set: updateDoc,
+      $set: {
+        telegramUsername: username,
+        telegramUsernameLower: normalizeUsername(username),
+        telegramUserId,
+        chatId,
+        updatedAt: new Date(),
+      },
     },
-    { upsert: true },
   );
 };
 
 export const getUserChatId = async (telegramUserId: number): Promise<number | undefined> => {
   const collection = await getCollection();
-  const doc = await collection.findOne({ telegramUserId });
+  const doc = await collection.findOne({ telegramUserId, isAllowed: true });
   return doc?.chatId;
 };
 
-export const getTelegramUserIdByUsername = async (username: string): Promise<number | undefined> => {
+export const getTelegramUserIdByUsername = async (
+  username: string,
+): Promise<number | undefined> => {
   if (!username) {
     return undefined;
   }
   const collection = await getCollection();
-  const doc = await collection.findOne({ telegramUsernameLower: normalizeUsername(username) });
+  const doc = await collection.findOne({
+    telegramUsernameLower: normalizeUsername(username),
+    isAllowed: true,
+  });
   return doc?.telegramUserId;
 };
 
@@ -94,35 +113,43 @@ export const getChatIdByUsername = async (username: string): Promise<number | un
     return undefined;
   }
   const collection = await getCollection();
-  const doc = await collection.findOne({ telegramUsernameLower: normalizeUsername(username) });
+  const doc = await collection.findOne({
+    telegramUsernameLower: normalizeUsername(username),
+    isAllowed: true,
+  });
   return doc?.chatId;
 };
 
-export const getLeadUsers = (): UserRecord[] => users.filter((user) => user.isLead);
-
-export const upsertGitlabUserProfile = async (username: string, name?: string): Promise<void> => {
+export const upsertGitlabUserProfile = async (
+  username: string,
+  name?: string,
+): Promise<void> => {
   if (!username || !name) {
     return;
   }
-  const collection = await getGitlabUsersCollection();
+  const collection = await getCollection();
   await collection.updateOne(
-    { usernameLower: normalizeUsername(username) },
+    { gitlabUsernameLower: normalizeUsername(username), isAllowed: true },
     {
       $set: {
-        username,
-        usernameLower: normalizeUsername(username),
+        gitlabUsername: username,
+        gitlabUsernameLower: normalizeUsername(username),
         name,
         updatedAt: new Date(),
       },
     },
-    { upsert: true },
   );
 };
 
-export const getGitlabUserProfile = async (username: string): Promise<GitlabUserDocument | null> => {
+export const getGitlabUserProfile = async (
+  username: string,
+): Promise<UserDocument | null> => {
   if (!username) {
     return null;
   }
-  const collection = await getGitlabUsersCollection();
-  return collection.findOne({ usernameLower: normalizeUsername(username) });
+  const collection = await getCollection();
+  return collection.findOne({
+    gitlabUsernameLower: normalizeUsername(username),
+    isAllowed: true,
+  });
 };

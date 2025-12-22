@@ -1,6 +1,6 @@
 import type { Collection } from 'mongodb';
 import { getDb } from '../db/mongo';
-import { users } from './users';
+import { listActiveReviewers } from './userStore';
 
 const COLLECTION_NAME = 'reviewer_queue';
 
@@ -14,11 +14,13 @@ const getCollection = async (): Promise<Collection<ReviewerQueueDocument>> => {
   return db.collection<ReviewerQueueDocument>(COLLECTION_NAME);
 };
 
-const baseReviewerList = (): string[] =>
-  users.filter((user) => user.isActive !== false && !user.isLead).map((user) => user.gitlabUsername ?? '').filter(Boolean);
+const baseReviewerList = async (): Promise<string[]> => {
+  const reviewers = await listActiveReviewers();
+  return reviewers;
+};
 
 export const refreshQueue = async (): Promise<string[]> => {
-  const queue = baseReviewerList();
+  const queue = await baseReviewerList();
   const collection = await getCollection();
   await collection.updateOne(
     {},

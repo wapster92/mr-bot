@@ -71,7 +71,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   if (!existingDoc?.author && attrs.action === 'open') {
     gitlabAuthorUsername =
       payload.object_attributes?.author?.username ?? payload.user?.username;
-    const userRecord = getUserByGitlabUsername(gitlabAuthorUsername);
+    const userRecord = await getUserByGitlabUsername(gitlabAuthorUsername);
     author = {
       ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
       ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
