@@ -3,8 +3,8 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildMergeRequestCommentMessage } from '../../messages/templates';
-import { sendHtmlMessage } from '../../messages/send';
-import { getChatIdByGitlabUsername } from '../../messages/recipients';
+import { sendHtmlMessage, sendHtmlMessageToChats } from '../../messages/send';
+import { getChatIdByGitlabUsername, getLeadChatIds } from '../../messages/recipients';
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
@@ -50,4 +50,5 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     noteText,
   });
   await sendHtmlMessage(bot, chatId, message);
+  await sendHtmlMessageToChats(bot, await getLeadChatIds(), message);
 };

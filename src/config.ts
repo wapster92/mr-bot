@@ -74,6 +74,9 @@ export const config = {
   },
   logGitlabEvents: parseBoolean(process.env.LOG_GITLAB_EVENTS),
   logGitlabMaxMb: parseNumber(process.env.LOG_GITLAB_MAX_MB, 20),
+  approvals: {
+    defaultRequired: parseNumber(process.env.APPROVALS_REQUIRED_DEFAULT, 2),
+  },
 } as const;
 
 console.log(config.mode)

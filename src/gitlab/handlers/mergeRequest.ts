@@ -1,4 +1,3 @@
-import { config } from '../../config';
 import {
   upsertMergeRequest,
   type MergeRequestDocument,
@@ -18,6 +17,7 @@ import { persistGitlabUserProfileFromPayload } from './common';
 import { pullReviewers } from '../../data/reviewerQueue';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
+import { config } from '../../config';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -115,6 +115,13 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   if (typeof attrs.approvals_left === 'number') {
     doc.approvalsLeft = attrs.approvals_left;
   }
+  if (doc.approvalsRequired === undefined) {
+    const fallbackRequired =
+      existingDoc?.approvalsRequired ?? config.approvals.defaultRequired;
+    if (Number.isFinite(fallbackRequired)) {
+      doc.approvalsRequired = fallbackRequired;
+    }
+  }
   if (taskKey) {
     doc.taskKey = taskKey;
   }
@@ -159,11 +166,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
 
   await upsertMergeRequest(doc);
 
+  let nextApprovers: string[] | undefined;
   if (attrs.action === 'approved' || attrs.action === 'unapproved') {
     const actorUsername = payload.user?.username;
     if (actorUsername) {
       const currentApprovers = existingDoc?.approvedBy ?? [];
-      const nextApprovers =
+      nextApprovers =
         attrs.action === 'approved'
           ? Array.from(new Set([...currentApprovers, actorUsername]))
           : currentApprovers.filter((username) => username !== actorUsername);
@@ -200,8 +208,19 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     typeof attrs.approvals_left === 'number'
       ? attrs.approvals_left
       : existingDoc?.approvalsLeft;
-  // Notify only when the MR has zero approvals left; avoid triggering on every single approval event.
-  const approvalTriggered = typeof approvalsLeft === 'number' ? approvalsLeft <= 0 : false;
+  const approvalsRequired =
+    typeof doc.approvalsRequired === 'number'
+      ? doc.approvalsRequired
+      : existingDoc?.approvalsRequired ?? config.approvals.defaultRequired;
+  const approversCount =
+    nextApprovers?.length ?? existingDoc?.approvedBy?.length ?? 0;
+  // Notify only when the MR has zero approvals left or enough approvals were collected.
+  const approvalTriggered =
+    typeof approvalsLeft === 'number'
+      ? approvalsLeft <= 0
+      : approvalsRequired > 0
+      ? approversCount >= approvalsRequired
+      : false;
   if (approvalTriggered && !existingDoc?.finalReviewNotified) {
     const message = buildFinalReviewMessage({
       title: doc.title ?? '—',
