@@ -1,6 +1,6 @@
 import { Context, Telegraf } from 'telegraf';
 import { getUserByTelegramUsername, persistUserChatId, upsertAllowedUser } from './data/userStore';
-import { listActiveMergeRequests } from './data/mergeRequestRepository';
+import { listActiveMergeRequests, listPendingReviewsForReviewer } from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
 import { buildMergeRequestMessages } from './services/mrSummary';
@@ -52,7 +52,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         'Доступные команды:',
         '/help — показать эту подсказку',
         '/status — базовая проверка доступности бота',
-        '/review — заглушка: в будущем покажет MR, где нужен ревьюер',
+        '/review — показать MR, где нужен твой ревью',
         '/mrs — показать активные MR и их статус',
         '/allow — добавить пользователя в whitelist (только лиды)',
       ].join('\n'),
@@ -61,8 +61,28 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.command('status', (ctx) => ctx.reply('Все системы в норме ✅'));
 
-  bot.command('review', (ctx) => {
-    ctx.reply('Пока я только заготовка 🙈. Скоро научусь собирать MR без ревью.');
+  bot.command('review', async (ctx) => {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+    if (!user.gitlabUsername) {
+      await ctx.reply('Не могу определить твой GitLab username.');
+      return;
+    }
+
+    const mergeRequests = await listPendingReviewsForReviewer(user.gitlabUsername, 10);
+    if (!mergeRequests.length) {
+      await ctx.reply('MR для ревью не найдено. Можно отдохнуть 🙂');
+      return;
+    }
+
+    const messages = await buildMergeRequestMessages(mergeRequests);
+    await ctx.reply(messages.join('\n\n'), {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    });
   });
 
   bot.command('allow', async (ctx) => {

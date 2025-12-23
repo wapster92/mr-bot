@@ -84,3 +84,21 @@ export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestD
     .limit(limit)
     .toArray();
 };
+
+export const listPendingReviewsForReviewer = async (
+  gitlabUsername: string,
+  limit = 10,
+): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({
+      reviewers: gitlabUsername,
+      approvedBy: { $ne: gitlabUsername },
+      $and: [
+        { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
+      ],
+    })
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .toArray();
+};
