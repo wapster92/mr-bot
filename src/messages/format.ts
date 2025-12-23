@@ -24,12 +24,13 @@ export const formatGitlabUserLabel = async (
     username;
 
   if (mapped?.telegramUsername) {
-    const telegramUserId = await getTelegramUserIdByUsername(mapped.telegramUsername);
     const label = escapeHtml(displayName);
-    if (telegramUserId) {
-      return `<a href="tg://user?id=${telegramUserId}">${label}</a>`;
-    }
     return `<a href="https://t.me/${escapeHtml(mapped.telegramUsername)}">${label}</a>`;
+  }
+
+  const telegramUserId = await getTelegramUserIdByUsername(mapped?.telegramUsername ?? '');
+  if (telegramUserId) {
+    return `<a href="tg://user?id=${telegramUserId}">${escapeHtml(displayName)}</a>`;
   }
 
   return escapeHtml(displayName);
