@@ -1,4 +1,16 @@
 services:
+  mongo:
+    image: mongo:7
+    restart: unless-stopped
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      MONGO_INITDB_ROOT_PASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      MONGO_INITDB_DATABASE: ${MONGODB_DB_NAME:-mr-bot}
+    ports:
+      - "127.0.0.1:27017:27017"
+    volumes:
+      - mongo_data:/data/db
+
   bot:
     build:
       context: .
@@ -9,4 +21,9 @@ services:
       - "3000:3000"
     volumes:
       - ./logs:/app/logs
+    depends_on:
+      - mongo
     restart: unless-stopped
+
+volumes:
+  mongo_data:

@@ -13,7 +13,12 @@ const normalizeUsername = (username: string): string => username.toLowerCase();
 
 const getCollection = async (): Promise<Collection<UserDocument>> => {
   const db = await getDb();
-  return db.collection<UserDocument>(COLLECTION_NAME);
+  const collection = db.collection<UserDocument>(COLLECTION_NAME);
+  await collection.createIndex({ gitlabUsernameLower: 1 }, { unique: true });
+  await collection.createIndex({ telegramUsernameLower: 1 }, { unique: true, sparse: true });
+  await collection.createIndex({ telegramUserId: 1 }, { unique: true, sparse: true });
+  await collection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+  return collection;
 };
 
 export const getUserByTelegramUsername = async (
