@@ -101,6 +101,12 @@ export const listOpenMergeRequests = async (): Promise<MergeRequestDocument[]> =
     .toArray();
 };
 
+export const listProjectIds = async (): Promise<number[]> => {
+  const collection = await getCollection();
+  const ids = await collection.distinct('projectId');
+  return ids.filter((id): id is number => typeof id === 'number');
+};
+
 export const listPendingReviewsForReviewer = async (
   gitlabUsername: string,
   limit = 10,

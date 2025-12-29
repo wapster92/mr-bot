@@ -1,10 +1,15 @@
 import { config } from '../config';
-import { listOpenMergeRequests, updateMergeRequest } from '../data/mergeRequestRepository';
+import {
+  listOpenMergeRequests,
+  updateMergeRequest,
+  upsertMergeRequest,
+  listProjectIds,
+} from '../data/mergeRequestRepository';
 import {
   fetchMergeRequest,
   fetchMergeRequestApprovals,
   fetchUserByUsername,
-  setMergeRequestReviewers,
+  fetchProjectMergeRequests,
 } from '../gitlab/api';
 import { persistGitlabUserProfiles } from '../gitlab/handlers/common';
 import { deliverHtmlMessageToRecipients, deliverHtmlMessage } from '../messages/send';
@@ -12,7 +17,8 @@ import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../mes
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { getGitlabUserIdByUsername, listLeadUsers, upsertGitlabUserProfile } from '../data/userStore';
+import { listLeadUsers, getGitlabUserIdByUsername, upsertGitlabUserProfile } from '../data/userStore';
+import { pullReviewers } from '../data/reviewerQueue';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -71,13 +77,54 @@ const syncReviewersToGitlab = async (
   if (!reviewerIds || !reviewerIds.length) {
     return { ok: false, error: 'cannot resolve reviewer ids' };
   }
-  const assigned = await setMergeRequestReviewers(projectId, iid, reviewerIds);
-  if (!assigned) {
-    const error = 'gitlab api returned false';
-    console.warn('[sync] Failed to assign reviewers via GitLab API', projectId, iid);
-    return { ok: false, error };
-  }
   return { ok: true };
+};
+
+const backfillMissingMergeRequests = async (): Promise<void> => {
+  const projectIds = await listProjectIds();
+  if (!projectIds.length) {
+    return;
+  }
+
+  const existing = await listOpenMergeRequests();
+  const existingKeys = new Set(existing.map((mr) => `${mr.projectId}:${mr.iid}`));
+
+  for (const projectId of projectIds) {
+    const mrs = await fetchProjectMergeRequests(projectId, 'opened');
+    if (!mrs?.length) {
+      continue;
+    }
+    for (const mr of mrs) {
+      if (typeof mr.iid !== 'number' || typeof mr.project_id !== 'number') {
+        continue;
+      }
+      const key = `${mr.project_id}:${mr.iid}`;
+      if (existingKeys.has(key)) {
+        continue;
+      }
+      const author = mr.author?.username
+        ? { gitlabUsername: mr.author.username, name: mr.author.name }
+        : {};
+      const doc = {
+        projectId: mr.project_id,
+        projectPath: '',
+        mrId: mr.id ?? 0,
+        iid: mr.iid,
+        title: mr.title ?? '—',
+        description: mr.description ?? '',
+        sourceBranch: mr.source_branch ?? '',
+        targetBranch: mr.target_branch ?? '',
+        url: mr.web_url ?? '',
+        author,
+        state: mr.state,
+        mergeStatus: mr.merge_status,
+        detailedMergeStatus: mr.detailed_merge_status,
+        createdAt: parseDate(mr.created_at) ?? new Date(),
+        updatedAt: parseDate(mr.updated_at) ?? new Date(),
+      };
+      await upsertMergeRequest(doc as any);
+    }
+  }
 };
 
 const maybeNotifyApprovals = async (
@@ -177,6 +224,7 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
   }
   syncRunning = true;
   try {
+    await backfillMissingMergeRequests();
     const mergeRequests = await listOpenMergeRequests();
     if (!mergeRequests.length) {
       return;

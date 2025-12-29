@@ -11,6 +11,7 @@ import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messag
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 import { pullReviewers } from '../../data/reviewerQueue';
 import { listLeadUsers } from '../../data/userStore';
+import { fetchPipelineJobs } from '../api';
 
 const isLintPipeline = (payload: any): boolean => {
   const attrs = payload.object_attributes ?? {};
@@ -49,7 +50,29 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
     return;
   }
 
-  await updateMergeRequest(projectId, iid, { lastLintStatus: status });
+  let lintStatus = status;
+  const pipelineId = attrs.id;
+  if (typeof pipelineId === 'number') {
+    const jobs = await fetchPipelineJobs(projectId, pipelineId);
+    const lintJobs = (jobs ?? []).filter((job) =>
+      ((job.stage ?? '').toLowerCase().includes('lint') ||
+        (job.name ?? '').toLowerCase().includes('lint')),
+    );
+    if (lintJobs.length) {
+      // Prefer failed/canceled over success, then default to first status.
+      if (lintJobs.some((job) => job.status === 'failed')) {
+        lintStatus = 'failed';
+      } else if (lintJobs.some((job) => job.status === 'canceled')) {
+        lintStatus = 'canceled';
+      } else if (lintJobs.every((job) => job.status === 'success')) {
+        lintStatus = 'success';
+      } else {
+        lintStatus = lintJobs[0]?.status ?? status;
+      }
+    }
+  }
+
+  await updateMergeRequest(projectId, iid, { lastLintStatus: lintStatus });
 
   const doc = await findMergeRequest(projectId, iid);
   if (!doc) {
@@ -59,7 +82,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
 
   let reviewers = doc.reviewers ?? [];
 
-  if (status === 'failed' || status === 'canceled') {
+  if (lintStatus === 'failed' || lintStatus === 'canceled') {
     const authorUsername = doc.author.gitlabUsername;
     if (!authorUsername) {
       console.warn('[pipeline] MR author not set');
@@ -85,7 +108,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
     return;
   }
 
-  if (status === 'success') {
+  if (lintStatus === 'success') {
     if (!reviewers.length) {
       const authorUsername = doc.author.gitlabUsername;
       const baseReviewers = await pullReviewers(authorUsername ? [authorUsername] : []);

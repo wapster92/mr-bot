@@ -30,6 +30,31 @@ export type GitlabApprovals = {
   }>;
 };
 
+export type GitlabPipelineJob = {
+  id?: number;
+  name?: string;
+  stage?: string;
+  status?: string;
+  web_url?: string;
+};
+
+export type GitlabMergeRequestListItem = {
+  id?: number;
+  iid?: number;
+  project_id?: number;
+  title?: string;
+  description?: string;
+  state?: string;
+  source_branch?: string;
+  target_branch?: string;
+  web_url?: string;
+  merge_status?: string;
+  detailed_merge_status?: string;
+  created_at?: string;
+  updated_at?: string;
+  author?: GitlabUser;
+};
+
 const normalizeHost = (value?: string): string | undefined => {
   if (!value) {
     return undefined;
@@ -238,6 +263,82 @@ export const fetchMergeRequestApprovals = async (
       typeof response?.approvals_left === 'number' ? response.approvals_left : undefined,
     approved_by: approvedBy,
   };
+};
+
+export const fetchPipelineJobs = async (
+  projectId: number,
+  pipelineId: number,
+): Promise<GitlabPipelineJob[] | undefined> => {
+  const api = getApiConfig();
+  if (!api) {
+    return undefined;
+  }
+  const client = getClient(api);
+  try {
+    const jobs: any = await withRetry(api, `Jobs.all ${projectId}#${pipelineId}`, () =>
+      client.Jobs.all(projectId, { pipelineId }),
+    );
+    if (!Array.isArray(jobs)) {
+      return undefined;
+    }
+    return jobs.map((job) => ({
+      id: typeof job.id === 'number' ? job.id : undefined,
+      name: typeof job.name === 'string' ? job.name : undefined,
+      stage: typeof job.stage === 'string' ? job.stage : undefined,
+      status: typeof job.status === 'string' ? job.status : undefined,
+      web_url: typeof job.web_url === 'string' ? job.web_url : undefined,
+    }));
+  } catch (error) {
+    console.warn(`[gitlab-api] Pipelines.allJobs failed: ${String(error)}`);
+    return undefined;
+  }
+};
+
+export const fetchProjectMergeRequests = async (
+  projectId: number,
+  state: 'opened' | 'closed' | 'merged' = 'opened',
+): Promise<GitlabMergeRequestListItem[] | undefined> => {
+  const api = getApiConfig();
+  if (!api) {
+    return undefined;
+  }
+  const client = getClient(api);
+  try {
+    const mrs: any = await withRetry(api, `MergeRequests.all project ${projectId}`, () =>
+      client.MergeRequests.all({
+        projectId,
+        state,
+        scope: 'all',
+        withMergeStatusRecheck: true,
+      }),
+    );
+    if (!Array.isArray(mrs)) {
+      return undefined;
+    }
+    return mrs.map((mr) => {
+      const item: GitlabMergeRequestListItem = {};
+      if (typeof mr.id === 'number') item.id = mr.id;
+      if (typeof mr.iid === 'number') item.iid = mr.iid;
+      item.project_id = typeof mr.project_id === 'number' ? mr.project_id : projectId;
+      if (typeof mr.title === 'string') item.title = mr.title;
+      if (typeof mr.description === 'string') item.description = mr.description;
+      if (typeof mr.state === 'string') item.state = mr.state;
+      if (typeof mr.source_branch === 'string') item.source_branch = mr.source_branch;
+      if (typeof mr.target_branch === 'string') item.target_branch = mr.target_branch;
+      if (typeof mr.web_url === 'string') item.web_url = mr.web_url;
+      if (typeof mr.merge_status === 'string') item.merge_status = mr.merge_status;
+      if (typeof mr.detailed_merge_status === 'string')
+        item.detailed_merge_status = mr.detailed_merge_status;
+      if (typeof mr.created_at === 'string') item.created_at = mr.created_at;
+      if (typeof mr.updated_at === 'string') item.updated_at = mr.updated_at;
+      const author = toGitlabUser(mr.author);
+      if (author) item.author = author;
+      return item;
+    });
+  } catch (error) {
+    console.warn(`[gitlab-api] MergeRequests.all failed: ${String(error)}`);
+    return undefined;
+  }
 };
 
 export const fetchUserByUsername = async (
