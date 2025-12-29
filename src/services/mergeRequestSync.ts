@@ -364,6 +364,39 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         await updateMergeRequest(mr.projectId, mr.iid, update);
       }
 
+      // Назначаем ревьюеров, если их нет или только один (используем очередь, плюс лидер).
+      const currentReviewers =
+        (update.reviewers as string[] | undefined) ?? mr.reviewers ?? [];
+      if (currentReviewers.length < 2) {
+        const exclude = [
+          ...(currentReviewers ?? []),
+          mr.author?.gitlabUsername ?? '',
+        ].filter(Boolean);
+        const picked = await pullReviewers(exclude);
+        const leads = await listLeadUsers();
+        const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
+        const assigned = Array.from(
+          new Set([...currentReviewers, ...picked].filter(Boolean)),
+        );
+        if (
+          leadUsername &&
+          !assigned.some((r) => r.toLowerCase() === leadUsername.toLowerCase()) &&
+          (!mr.author?.gitlabUsername ||
+            mr.author.gitlabUsername.toLowerCase() !== leadUsername.toLowerCase())
+        ) {
+          assigned.push(leadUsername);
+        }
+        if (assigned.length) {
+          const updateReviewers: Record<string, unknown> = {
+            reviewers: assigned,
+            reviewersSyncedAt: new Date(),
+          };
+          updateReviewers.reviewersSyncFailedAt = undefined;
+          updateReviewers.reviewersSyncError = undefined;
+          await updateMergeRequest(mr.projectId, mr.iid, updateReviewers);
+        }
+      }
+
       await maybeNotifyApprovals(
         syncBot,
         {
