@@ -145,12 +145,6 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     doc.detailedMergeStatus = attrs.detailed_merge_status;
   }
 
-  if (apiMergeRequest) {
-    const apiReviewerUsernames =
-      apiMergeRequest.reviewers?.map((reviewer) => reviewer.username).filter(Boolean) ?? [];
-    doc.reviewers = apiReviewerUsernames as string[];
-  }
-
   if (apiApprovals) {
     if (typeof apiApprovals.approvals_required === 'number') {
       doc.approvalsRequired = apiApprovals.approvals_required;
@@ -158,11 +152,11 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     if (typeof apiApprovals.approvals_left === 'number') {
       doc.approvalsLeft = apiApprovals.approvals_left;
     }
-    if (Array.isArray(apiApprovals.approved_by)) {
-      doc.approvedBy = apiApprovals.approved_by
-        .map((item) => item.user?.username)
-        .filter(Boolean) as string[];
-    }
+    doc.approvedBy = Array.isArray(apiApprovals.approved_by)
+      ? (apiApprovals.approved_by
+          .map((item) => item.user?.username)
+          .filter(Boolean) as string[])
+      : [];
   }
 
   if (!apiApprovals) {
@@ -199,6 +193,17 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
   if (typeof doc.approvalsLeft === 'number' && doc.approvalsLeft < 0) {
     doc.approvalsLeft = 0;
+  }
+  if (
+    typeof doc.approvalsRequired === 'number' &&
+    typeof doc.approvalsLeft === 'number' &&
+    doc.approvalsRequired > 0 &&
+    doc.approvalsLeft === 0
+  ) {
+    const approversCount = (doc.approvedBy ?? []).length;
+    if (approversCount < doc.approvalsRequired) {
+      doc.approvalsLeft = Math.max(doc.approvalsRequired - approversCount, 0);
+    }
   }
   if (taskKey) {
     doc.taskKey = taskKey;

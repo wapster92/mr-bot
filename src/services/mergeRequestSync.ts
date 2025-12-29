@@ -209,25 +209,7 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
           apiMergeRequest.reviewers
             ?.map((reviewer) => reviewer.username)
             .filter((username): username is string => Boolean(username)) ?? [];
-        let reviewersToStore = apiReviewerUsernames;
-
-        if (!apiReviewerUsernames.length && mr.reviewers?.length) {
-          const syncResult = await syncReviewersToGitlab(
-            mr.projectId,
-            mr.iid,
-            mr.reviewers,
-          );
-          if (syncResult.ok) {
-            reviewersToStore = mr.reviewers;
-            update.reviewersSyncedAt = new Date();
-            update.reviewersSyncFailedAt = null;
-            update.reviewersSyncError = null;
-          } else {
-            reviewersToStore = mr.reviewers;
-            update.reviewersSyncFailedAt = new Date();
-            update.reviewersSyncError = syncResult.error ?? 'unknown error';
-          }
-        }
+        const reviewersToStore = mr.reviewers ?? apiReviewerUsernames;
 
         if (typeof apiMergeRequest.title === 'string') {
           update.title = apiMergeRequest.title;
@@ -286,11 +268,11 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         if (typeof apiApprovals.approvals_left === 'number') {
           update.approvalsLeft = apiApprovals.approvals_left;
         }
-        if (Array.isArray(apiApprovals.approved_by)) {
-          update.approvedBy = apiApprovals.approved_by
-            .map((item) => item.user?.username)
-            .filter((username): username is string => Boolean(username));
-        }
+        update.approvedBy = Array.isArray(apiApprovals.approved_by)
+          ? apiApprovals.approved_by
+              .map((item) => item.user?.username)
+              .filter((username): username is string => Boolean(username))
+          : [];
       }
 
       const normalizedApprovalsRequired =
@@ -315,6 +297,19 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       }
       if (typeof update.approvalsLeft === 'number' && update.approvalsLeft < 0) {
         update.approvalsLeft = 0;
+      }
+      if (
+        typeof update.approvalsRequired === 'number' &&
+        typeof update.approvalsLeft === 'number' &&
+        update.approvalsRequired > 0 &&
+        update.approvalsLeft === 0
+      ) {
+        const approversCount = Array.isArray(update.approvedBy)
+          ? update.approvedBy.length
+          : 0;
+        if (approversCount < update.approvalsRequired) {
+          update.approvalsLeft = Math.max(update.approvalsRequired - approversCount, 0);
+        }
       }
 
       if (Object.keys(update).length) {

@@ -1,7 +1,7 @@
 import { findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
-import { persistGitlabUserProfileFromPayload, persistGitlabUserProfiles } from './common';
+import { persistGitlabUserProfileFromPayload } from './common';
 import {
   buildLintFailedMessage,
   buildLintPassedLeadMessage,
@@ -9,13 +9,8 @@ import {
 } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
-import { fetchMergeRequest, fetchUserByUsername, setMergeRequestReviewers } from '../api';
 import { pullReviewers } from '../../data/reviewerQueue';
-import {
-  getGitlabUserIdByUsername,
-  listLeadUsers,
-  upsertGitlabUserProfile,
-} from '../../data/userStore';
+import { listLeadUsers } from '../../data/userStore';
 
 const isLintPipeline = (payload: any): boolean => {
   const attrs = payload.object_attributes ?? {};
@@ -62,20 +57,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
     return;
   }
 
-  const apiMergeRequest = await fetchMergeRequest(projectId, iid);
-  if (apiMergeRequest?.reviewers) {
-    await persistGitlabUserProfiles(apiMergeRequest.reviewers);
-  }
-
   let reviewers = doc.reviewers ?? [];
-  if (apiMergeRequest) {
-    const apiReviewerUsernames =
-      apiMergeRequest.reviewers
-        ?.map((reviewer) => reviewer.username)
-        .filter((username): username is string => Boolean(username)) ?? [];
-    reviewers = apiReviewerUsernames;
-    await updateMergeRequest(projectId, iid, { reviewers });
-  }
 
   if (status === 'failed' || status === 'canceled') {
     const authorUsername = doc.author.gitlabUsername;
@@ -104,11 +86,9 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
   }
 
   if (status === 'success') {
-    if (!reviewers.length && apiMergeRequest) {
+    if (!reviewers.length) {
       const authorUsername = doc.author.gitlabUsername;
-      const baseReviewers = await pullReviewers(
-        authorUsername ? [authorUsername] : [],
-      );
+      const baseReviewers = await pullReviewers(authorUsername ? [authorUsername] : []);
       const leads = await listLeadUsers();
       const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
       const assignedReviewers = [...baseReviewers];
@@ -123,37 +103,8 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       }
 
       if (assignedReviewers.length) {
-        await updateMergeRequest(projectId, iid, { reviewers: assignedReviewers });
-        const reviewerIds: number[] = [];
-        const missingIds: string[] = [];
-
-        for (const username of assignedReviewers) {
-          const storedId = await getGitlabUserIdByUsername(username);
-          if (storedId) {
-            reviewerIds.push(storedId);
-            continue;
-          }
-          const apiUser = await fetchUserByUsername(username);
-          if (apiUser?.id) {
-            reviewerIds.push(apiUser.id);
-            if (apiUser.username) {
-              await upsertGitlabUserProfile(apiUser.username, apiUser.name, apiUser.id);
-            }
-            continue;
-          }
-          missingIds.push(username);
-        }
-
-        if (missingIds.length) {
-          console.warn('[pipeline] Cannot resolve GitLab IDs for reviewers', missingIds.join(', '));
-        } else {
-          const assigned = await setMergeRequestReviewers(projectId, iid, reviewerIds);
-          if (!assigned) {
-            console.warn('[pipeline] Failed to assign reviewers via GitLab API', projectId, iid);
-          }
-        }
-
         reviewers = assignedReviewers;
+        await updateMergeRequest(projectId, iid, { reviewers: assignedReviewers });
       }
     }
 
