@@ -41,6 +41,7 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
 
   const noteText = payload.object_attributes?.note ?? '';
   const commenterName = payload.user?.name ?? commenter ?? 'Ревьюер';
+  const noteId = payload.object_attributes?.id;
 
   const message = buildMergeRequestCommentMessage({
     title: doc.title ?? '—',
@@ -53,10 +54,12 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     eventType: 'mr_comment',
     projectId: doc.projectId,
     mrIid: doc.iid,
+    ...(noteId ? { dedupeId: String(noteId) } : {}),
   });
   await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
     eventType: 'mr_comment',
     projectId: doc.projectId,
     mrIid: doc.iid,
+    ...(noteId ? { dedupeId: String(noteId) } : {}),
   });
 };

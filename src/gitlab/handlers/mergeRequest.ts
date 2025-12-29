@@ -180,6 +180,24 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       doc.approvalsRequired = fallbackRequired;
     }
   }
+  const normalizedApprovalsRequired =
+    typeof doc.approvalsRequired === 'number' && doc.approvalsRequired > 0
+      ? doc.approvalsRequired
+      : config.approvals.defaultRequired;
+  doc.approvalsRequired = normalizedApprovalsRequired;
+  if (
+    doc.approvalsLeft === undefined ||
+    doc.approvalsLeft === null ||
+    typeof doc.approvalsLeft !== 'number'
+  ) {
+    doc.approvalsLeft =
+      typeof attrs.approvals_left === 'number'
+        ? attrs.approvals_left
+        : existingDoc?.approvalsLeft ?? normalizedApprovalsRequired;
+  }
+  if (typeof doc.approvalsLeft === 'number' && doc.approvalsLeft < 0) {
+    doc.approvalsLeft = 0;
+  }
   if (taskKey) {
     doc.taskKey = taskKey;
   }
@@ -289,10 +307,10 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   const approversCount = uniqueApprovers.length;
   // Notify only when the MR has zero approvals left or enough approvals were collected.
   const approvalTriggered =
-    typeof approvalsLeft === 'number'
-      ? approvalsLeft <= 0
-      : approvalsRequired > 0
-      ? approversCount >= approvalsRequired
+    approvalsRequired > 0
+      ? typeof approvalsLeft === 'number'
+        ? approvalsLeft <= 0
+        : approversCount >= approvalsRequired
       : false;
   if (approvalTriggered && !existingDoc?.finalReviewNotified) {
     const message = buildFinalReviewMessage({

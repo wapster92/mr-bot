@@ -100,19 +100,22 @@ const maybeNotifyApprovals = async (
     authorMergeNotified?: boolean | undefined;
   },
 ): Promise<void> => {
-  const approvalsLeft = current.approvalsLeft;
+  const approvalsRequiredRaw = current.approvalsRequired;
   const approvalsRequired =
-    typeof current.approvalsRequired === 'number'
-      ? current.approvalsRequired
+    typeof approvalsRequiredRaw === 'number' && approvalsRequiredRaw > 0
+      ? approvalsRequiredRaw
       : config.approvals.defaultRequired;
+  const approvalsLeftRaw = current.approvalsLeft;
+  const approvalsLeft =
+    typeof approvalsLeftRaw === 'number' && approvalsLeftRaw >= 0
+      ? approvalsLeftRaw
+      : approvalsRequired;
   const approvers = current.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
   const approversCount = uniqueApprovers.length;
   const approvalTriggered =
-    typeof approvalsLeft === 'number'
-      ? approvalsLeft <= 0
-      : approvalsRequired > 0
-      ? approversCount >= approvalsRequired
+    approvalsRequired > 0
+      ? approvalsLeft <= 0 || approversCount >= approvalsRequired
       : false;
 
   if (approvalTriggered && !existing.finalReviewNotified) {
@@ -288,6 +291,27 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
             .map((item) => item.user?.username)
             .filter((username): username is string => Boolean(username));
         }
+      }
+
+      const normalizedApprovalsRequired =
+        typeof update.approvalsRequired === 'number' && update.approvalsRequired > 0
+          ? update.approvalsRequired
+          : typeof mr.approvalsRequired === 'number' && mr.approvalsRequired > 0
+          ? mr.approvalsRequired
+          : config.approvals.defaultRequired;
+      update.approvalsRequired = normalizedApprovalsRequired;
+      if (
+        update.approvalsLeft === undefined ||
+        update.approvalsLeft === null ||
+        typeof update.approvalsLeft !== 'number'
+      ) {
+        update.approvalsLeft =
+          typeof mr.approvalsLeft === 'number' && mr.approvalsLeft >= 0
+            ? mr.approvalsLeft
+            : normalizedApprovalsRequired;
+      }
+      if (typeof update.approvalsLeft === 'number' && update.approvalsLeft < 0) {
+        update.approvalsLeft = 0;
       }
 
       if (Object.keys(update).length) {

@@ -30,15 +30,20 @@ const getCollection = async (): Promise<Collection<NotificationQueueDocument>> =
   return collection;
 };
 
-const findPendingByDedupeKey = async (
+const findExistingByDedupeKey = async (
   chatId: number,
   dedupeKey: string,
 ): Promise<NotificationQueueDocument | null> => {
   const collection = await getCollection();
+  const oneDayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
   return collection.findOne({
     chatId,
     dedupeKey,
-    $or: [{ status: 'pending' }, { status: { $exists: false } }],
+    $or: [
+      { status: 'pending' },
+      { status: { $exists: false } },
+      { status: 'delivered', updatedAt: { $gte: oneDayAgo } },
+    ],
   });
 };
 
@@ -48,7 +53,7 @@ export const enqueueNotification = async (
   const collection = await getCollection();
   const now = new Date();
   if (doc.dedupeKey) {
-    const existing = await findPendingByDedupeKey(doc.chatId, doc.dedupeKey);
+    const existing = await findExistingByDedupeKey(doc.chatId, doc.dedupeKey);
     if (existing?._id) {
       await collection.updateOne(
         { _id: existing._id },

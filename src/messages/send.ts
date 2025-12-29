@@ -12,6 +12,8 @@ export type NotificationMeta = {
   projectId?: number;
   mrIid?: number;
   mrId?: number;
+  dedupeId?: string;
+  dedupeKeyOverride?: string;
 };
 
 const buildMrKey = (meta?: NotificationMeta): string | undefined => {
@@ -25,6 +27,9 @@ const buildDedupeKey = (
   chatId: number,
   meta?: NotificationMeta,
 ): string | undefined => {
+  if (meta?.dedupeKeyOverride) {
+    return meta.dedupeKeyOverride;
+  }
   if (!meta?.eventType) {
     return undefined;
   }
@@ -32,7 +37,8 @@ const buildDedupeKey = (
   if (!mrKey) {
     return undefined;
   }
-  return `${chatId}:${mrKey}:${meta.eventType}`;
+  const dedupeSuffix = meta.dedupeId ? `:${meta.dedupeId}` : '';
+  return `${chatId}:${mrKey}:${meta.eventType}${dedupeSuffix}`;
 };
 
 export const sendHtmlMessage = async (
