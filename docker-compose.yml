@@ -12,7 +12,7 @@ services:
       - mongo_data:/data/db
 
   mongoku:
-    image: mongoku/mongoku:latest
+    image: ghcr.io/mongoku/mongoku:latest
     restart: unless-stopped
     environment:
       MONGOKU_SERVER: 0.0.0.0
