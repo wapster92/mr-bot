@@ -11,6 +11,19 @@ services:
     volumes:
       - mongo_data:/data/db
 
+  mongoku:
+    image: mongoku/mongoku:latest
+    restart: unless-stopped
+    environment:
+      MONGOKU_SERVER: 0.0.0.0
+      MONGOKU_PORT: 3100
+      MONGOKU_DATABASE_URL: ${MONGOKU_DATABASE_URL}
+      MONGOKU_DB: ${MONGOKU_DB:-mr-bot}
+    ports:
+      - "127.0.0.1:3100:3100"
+    depends_on:
+      - mongo
+
   bot:
     build:
       context: .
