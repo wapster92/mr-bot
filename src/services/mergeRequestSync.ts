@@ -367,25 +367,43 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       // Назначаем ревьюеров, если их нет или только один (используем очередь, плюс лидер).
       const currentReviewers =
         (update.reviewers as string[] | undefined) ?? mr.reviewers ?? [];
-      if (currentReviewers.length < 2) {
+      const leads = await listLeadUsers();
+      const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
+      const leadUsernamesLower = new Set(
+        leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
+      );
+      const currentLower = currentReviewers.map((r) => r.toLowerCase());
+      const currentLeadPresent = currentLower.some((r) => leadUsernamesLower.has(r));
+      const currentDevReviewers = currentReviewers.filter(
+        (r) => !leadUsernamesLower.has(r.toLowerCase()),
+      );
+
+      const neededDev = Math.max(0, 2 - currentDevReviewers.length);
+      if (neededDev > 0 || (!currentLeadPresent && leadUsername)) {
         const exclude = [
-          ...(currentReviewers ?? []),
+          ...currentReviewers,
           mr.author?.gitlabUsername ?? '',
-        ].filter(Boolean);
+        ]
+          .filter(Boolean)
+          .map((r) => r.toLowerCase());
         const picked = await pullReviewers(exclude);
-        const leads = await listLeadUsers();
-        const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
-        const assigned = Array.from(
-          new Set([...currentReviewers, ...picked].filter(Boolean)),
-        );
+        const addDevs = picked
+          .filter((r) => !leadUsernamesLower.has(r.toLowerCase()))
+          .slice(0, neededDev);
+
+        const assignedSet = new Set<string>(currentReviewers);
+        for (const dev of addDevs) {
+          assignedSet.add(dev);
+        }
         if (
           leadUsername &&
-          !assigned.some((r) => r.toLowerCase() === leadUsername.toLowerCase()) &&
+          !assignedSet.has(leadUsername) &&
           (!mr.author?.gitlabUsername ||
             mr.author.gitlabUsername.toLowerCase() !== leadUsername.toLowerCase())
         ) {
-          assigned.push(leadUsername);
+          assignedSet.add(leadUsername);
         }
+        const assigned = Array.from(assignedSet);
         if (assigned.length) {
           const updateReviewers: Record<string, unknown> = {
             reviewers: assigned,
