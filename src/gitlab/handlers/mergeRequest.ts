@@ -4,17 +4,18 @@ import {
   findMergeRequest,
   updateMergeRequest,
 } from '../../data/mergeRequestRepository';
-import { getUserByGitlabUsername } from '../../data/userStore';
+import { getUserByGitlabUsername, listLeadUsers } from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
 import {
   buildFinalReviewMessage,
+  buildMergeReadyForAuthorMessage,
   buildMergeRequestClosedMessage,
   buildMergeRequestCreatedMessage,
 } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
-import { persistGitlabUserProfileFromPayload } from './common';
-import { pullReviewers } from '../../data/reviewerQueue';
+import { persistGitlabUserProfileFromPayload, persistGitlabUserProfiles } from './common';
+import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { config } from '../../config';
@@ -62,25 +63,60 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   const project = payload.project ?? {};
   const attrs = payload.object_attributes ?? {};
   await persistGitlabUserProfileFromPayload(payload);
+  const projectId = project.id;
+  const mrIid = attrs.iid;
+  const [apiMergeRequest, apiApprovals] =
+    typeof projectId === 'number' && typeof mrIid === 'number'
+      ? await Promise.all([
+          fetchMergeRequest(projectId, mrIid),
+          fetchMergeRequestApprovals(projectId, mrIid),
+        ])
+      : [undefined, undefined];
+  if (apiMergeRequest || apiApprovals) {
+    const apiUsers = [
+      apiMergeRequest?.author,
+      ...(apiMergeRequest?.reviewers ?? []),
+      ...(apiApprovals?.approved_by ?? []).map((item) => item.user ?? {}),
+    ];
+    await persistGitlabUserProfiles(
+      apiUsers.filter(Boolean) as Array<{ username?: string; name?: string; id?: number }>,
+    );
+  }
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
 
-  let author = existingDoc?.author ?? {};
-  let gitlabAuthorUsername: string | undefined;
+  const author = existingDoc?.author ? { ...existingDoc.author } : {};
+  const apiAuthor = apiMergeRequest?.author;
+  const apiAuthorUsername = apiAuthor?.username;
+  let gitlabAuthorUsername = author.gitlabUsername;
 
-  if (!existingDoc?.author && attrs.action === 'open') {
+  if (!gitlabAuthorUsername && apiAuthorUsername) {
+    gitlabAuthorUsername = apiAuthorUsername;
+    author.gitlabUsername = apiAuthorUsername;
+  }
+
+  if (!author.name && apiAuthor?.name) {
+    author.name = apiAuthor.name;
+  }
+
+  if (!author.gitlabUsername && attrs.action === 'open') {
     gitlabAuthorUsername =
       payload.object_attributes?.author?.username ?? payload.user?.username;
-    const userRecord = await getUserByGitlabUsername(gitlabAuthorUsername);
-    author = {
-      ...(gitlabAuthorUsername ? { gitlabUsername: gitlabAuthorUsername } : {}),
-      ...(userRecord?.telegramUsername ? { telegramUsername: userRecord.telegramUsername } : {}),
-      ...(payload.object_attributes?.author?.name
-        ? { name: payload.object_attributes.author.name }
-        : payload.user?.name
-        ? { name: payload.user.name }
-        : {}),
-    };
+    if (gitlabAuthorUsername) {
+      author.gitlabUsername = gitlabAuthorUsername;
+    }
+    const payloadAuthorName =
+      payload.object_attributes?.author?.name ?? payload.user?.name;
+    if (!author.name && payloadAuthorName) {
+      author.name = payloadAuthorName;
+    }
+  }
+
+  if (author.gitlabUsername && !author.telegramUsername) {
+    const userRecord = await getUserByGitlabUsername(author.gitlabUsername);
+    if (userRecord?.telegramUsername) {
+      author.telegramUsername = userRecord.telegramUsername;
+    }
   }
 
   const doc: MergeRequestDocument = {
@@ -109,11 +145,33 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     doc.detailedMergeStatus = attrs.detailed_merge_status;
   }
 
-  if (typeof attrs.approvals_required === 'number') {
-    doc.approvalsRequired = attrs.approvals_required;
+  if (apiMergeRequest) {
+    const apiReviewerUsernames =
+      apiMergeRequest.reviewers?.map((reviewer) => reviewer.username).filter(Boolean) ?? [];
+    doc.reviewers = apiReviewerUsernames as string[];
   }
-  if (typeof attrs.approvals_left === 'number') {
-    doc.approvalsLeft = attrs.approvals_left;
+
+  if (apiApprovals) {
+    if (typeof apiApprovals.approvals_required === 'number') {
+      doc.approvalsRequired = apiApprovals.approvals_required;
+    }
+    if (typeof apiApprovals.approvals_left === 'number') {
+      doc.approvalsLeft = apiApprovals.approvals_left;
+    }
+    if (Array.isArray(apiApprovals.approved_by)) {
+      doc.approvedBy = apiApprovals.approved_by
+        .map((item) => item.user?.username)
+        .filter(Boolean) as string[];
+    }
+  }
+
+  if (!apiApprovals) {
+    if (typeof attrs.approvals_required === 'number') {
+      doc.approvalsRequired = attrs.approvals_required;
+    }
+    if (typeof attrs.approvals_left === 'number') {
+      doc.approvalsLeft = attrs.approvals_left;
+    }
   }
   if (doc.approvalsRequired === undefined) {
     const fallbackRequired =
@@ -138,36 +196,39 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   if (attrs.action === 'open' && !isDraft(attrs)) {
-    const reviewerSource = author.gitlabUsername ?? gitlabAuthorUsername ?? '';
-    const reviewers = await pullReviewers([reviewerSource].filter(Boolean) as string[]);
-    if (reviewers.length) {
-      doc.reviewers = reviewers;
-      const reviewerLabels = await Promise.all(
-        reviewers.map((reviewer) => formatGitlabUserLabel(reviewer)),
-      );
-      const reviewerList = reviewerLabels.join(', ');
-      const authorLabel = await formatGitlabUserLabel(author.gitlabUsername, author.name);
-      const message = buildMergeRequestCreatedMessage({
-        title: doc.title ?? '—',
-        authorLabel,
-        reviewerList,
-        url: doc.url ?? '—',
-        taskUrl: doc.taskUrl,
+    const reviewerLabels = doc.reviewers?.length
+      ? await Promise.all(doc.reviewers.map((reviewer) => formatGitlabUserLabel(reviewer)))
+      : [];
+    const reviewerList = reviewerLabels.length ? reviewerLabels.join(', ') : 'не назначены';
+    const authorLabel = await formatGitlabUserLabel(author.gitlabUsername, author.name);
+    const message = buildMergeRequestCreatedMessage({
+      title: doc.title ?? '—',
+      authorLabel,
+      reviewerList,
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+      eventType: 'mr_created',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+    });
+    const authorRecipient = doc.author.gitlabUsername
+      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
+      : undefined;
+    if (authorRecipient) {
+      await deliverHtmlMessage(bot, authorRecipient, message, {
+        eventType: 'mr_created',
+        projectId: doc.projectId,
+        mrIid: doc.iid,
       });
-      await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
-      const authorRecipient = doc.author.gitlabUsername
-        ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
-        : undefined;
-      if (authorRecipient) {
-        await deliverHtmlMessage(bot, authorRecipient, message);
-      }
     }
   }
 
   await upsertMergeRequest(doc);
 
   let nextApprovers: string[] | undefined;
-  if (attrs.action === 'approved' || attrs.action === 'unapproved') {
+  if (!apiApprovals && (attrs.action === 'approved' || attrs.action === 'unapproved')) {
     const actorUsername = payload.user?.username;
     if (actorUsername) {
       const currentApprovers = existingDoc?.approvedBy ?? [];
@@ -194,26 +255,38 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+      eventType: 'mr_closed',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+    });
     const authorRecipient = doc.author.gitlabUsername
       ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
     if (authorRecipient) {
-      await deliverHtmlMessage(bot, authorRecipient, message);
+      await deliverHtmlMessage(bot, authorRecipient, message, {
+        eventType: 'mr_closed',
+        projectId: doc.projectId,
+        mrIid: doc.iid,
+      });
     }
     return;
   }
 
   const approvalsLeft =
-    typeof attrs.approvals_left === 'number'
+    typeof doc.approvalsLeft === 'number'
+      ? doc.approvalsLeft
+      : typeof attrs.approvals_left === 'number'
       ? attrs.approvals_left
       : existingDoc?.approvalsLeft;
   const approvalsRequired =
     typeof doc.approvalsRequired === 'number'
       ? doc.approvalsRequired
       : existingDoc?.approvalsRequired ?? config.approvals.defaultRequired;
-  const approversCount =
-    nextApprovers?.length ?? existingDoc?.approvedBy?.length ?? 0;
+  const approvers =
+    doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy ?? [];
+  const uniqueApprovers = Array.from(new Set(approvers));
+  const approversCount = uniqueApprovers.length;
   // Notify only when the MR has zero approvals left or enough approvals were collected.
   const approvalTriggered =
     typeof approvalsLeft === 'number'
@@ -227,7 +300,43 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+      eventType: 'mr_final_review',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+    });
     await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
+  }
+
+  if (!existingDoc?.authorMergeNotified && approversCount >= 3) {
+    const leads = await listLeadUsers();
+    const leadUsernames = leads
+      .map((lead) => lead.gitlabUsername)
+      .filter(Boolean)
+      .map((name) => name.toLowerCase());
+    const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
+    const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
+    const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
+
+    if (leadApprovers.length >= 1 && nonLeadApprovers.length >= 2) {
+      const message = buildMergeReadyForAuthorMessage({
+        title: doc.title ?? '—',
+        url: doc.url ?? '—',
+        taskUrl: doc.taskUrl,
+      });
+      const authorRecipient = doc.author.gitlabUsername
+        ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
+        : undefined;
+      if (authorRecipient) {
+        await deliverHtmlMessage(bot, authorRecipient, message, {
+          eventType: 'mr_ready_to_merge',
+          projectId: doc.projectId,
+          mrIid: doc.iid,
+        });
+      } else {
+        console.warn('[merge-request] Cannot notify author about merge readiness');
+      }
+      await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
+    }
   }
 };

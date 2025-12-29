@@ -1,6 +1,10 @@
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { listQueuedNotifications, markNotificationDelivered } from '../data/notificationQueueRepository';
+import {
+  listQueuedNotifications,
+  markNotificationDelivered,
+  markNotificationError,
+} from '../data/notificationQueueRepository';
 import { getUserByGitlabUsername, getUserByTelegramUsername } from '../data/userStore';
 import { isWithinWorkingHours } from '../messages/recipients';
 import { sendHtmlMessage } from '../messages/send';
@@ -23,9 +27,16 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
       continue;
     }
 
-    await sendHtmlMessage(bot, item.chatId, item.text);
-    if (item._id) {
-      await markNotificationDelivered(item._id);
+    try {
+      await sendHtmlMessage(bot, item.chatId, item.text);
+      if (item._id) {
+        await markNotificationDelivered(item._id);
+      }
+    } catch (error) {
+      if (item._id) {
+        await markNotificationError(item._id, String(error));
+      }
+      console.warn('[notify] Failed to deliver queued message', error);
     }
   }
 };

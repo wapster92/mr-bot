@@ -5,6 +5,7 @@ import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
 import { buildMergeRequestMessages } from './services/mrSummary';
 import { flushNotificationQueue } from './services/notificationQueue';
+import { listErroredNotifications } from './data/notificationQueueRepository';
 
 export type BotContext = Context;
 
@@ -161,6 +162,28 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
     });
+  });
+
+  bot.command('queue_errors', async (ctx) => {
+    const actor = await getUserByTelegramUsername(ctx.from?.username);
+    if (!actor?.isLead) {
+      await ctx.reply('Команда доступна только лидам.');
+      return;
+    }
+    const errors = await listErroredNotifications(20);
+    if (!errors.length) {
+      await ctx.reply('Ошибок очереди нет.');
+      return;
+    }
+    const lines = errors.map((item) => {
+      const ts = item.errorAt?.toISOString() ?? '—';
+      const who =
+        item.telegramUsername ??
+        item.gitlabUsername ??
+        `chat:${item.chatId}`;
+      return `${ts} | ${who} | ${item.eventType ?? 'event'} | ${item.errorMessage ?? 'unknown error'}`;
+    });
+    await ctx.reply(['Ошибки доставки (последние 20):', ...lines].join('\n'));
   });
 
   return bot;

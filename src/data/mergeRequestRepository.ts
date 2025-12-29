@@ -30,6 +30,10 @@ export type MergeRequestDocument = {
   approvedBy?: string[];
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
+  authorMergeNotified?: boolean;
+  reviewersSyncedAt?: Date;
+  reviewersSyncFailedAt?: Date;
+  reviewersSyncError?: string;
 };
 
 const COLLECTION_NAME = 'merge_requests';
@@ -82,6 +86,18 @@ export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestD
     })
     .sort({ updatedAt: -1 })
     .limit(limit)
+    .toArray();
+};
+
+export const listOpenMergeRequests = async (): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({
+      $and: [
+        { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
+      ],
+    })
+    .sort({ updatedAt: -1 })
     .toArray();
 };
 

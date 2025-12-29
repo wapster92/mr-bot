@@ -49,6 +49,14 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     commenterName,
     noteText,
   });
-  await deliverHtmlMessage(bot, authorRecipient, message);
-  await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message);
+  await deliverHtmlMessage(bot, authorRecipient, message, {
+    eventType: 'mr_comment',
+    projectId: doc.projectId,
+    mrIid: doc.iid,
+  });
+  await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+    eventType: 'mr_comment',
+    projectId: doc.projectId,
+    mrIid: doc.iid,
+  });
 };

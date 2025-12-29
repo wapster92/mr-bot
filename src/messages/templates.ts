@@ -44,6 +44,12 @@ export const buildFinalReviewMessage = (input: MergeRequestMessageInput): string
   return parts.filter(Boolean).join('\n');
 };
 
+export const buildMergeReadyForAuthorMessage = (input: MergeRequestMessageInput): string => {
+  const header = `✅ MR "${escapeHtml(input.title)}" получил нужные апрувы. Можно сливать.`;
+  const parts = buildMrParts(input, header);
+  return parts.filter(Boolean).join('\n');
+};
+
 export const buildLintFailedMessage = (input: MergeRequestMessageInput): string => {
   const header = `🚫 Линт упал в MR "${escapeHtml(input.title)}". Проверь пайплайн и исправь ошибки.`;
   const parts = buildMrParts(input, header);

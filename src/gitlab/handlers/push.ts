@@ -45,6 +45,10 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessage(bot, reviewerRecipient, message);
+    await deliverHtmlMessage(bot, reviewerRecipient, message, {
+      eventType: 'mr_push',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+    });
   }
 };

@@ -30,6 +30,8 @@ const normalizePath = (value: string | undefined, fallback: string): string => {
 
 const TELEGRAM_WEBHOOK_PATH = normalizePath(process.env.TELEGRAM_WEBHOOK_PATH, '/telegram/webhook');
 const GITLAB_WEBHOOK_PATH = normalizePath(process.env.GITLAB_WEBHOOK_PATH, '/gitlab/webhook');
+const GITLAB_API_BASE_URL = process.env.GITLAB_API_BASE_URL;
+const GITLAB_API_TOKEN = process.env.GITLAB_API_TOKEN;
 
 const TELEGRAM_WEBHOOK_DOMAIN = process.env.TELEGRAM_WEBHOOK_DOMAIN;
 
@@ -48,6 +50,10 @@ const parseNumber = (value: string | undefined, fallback: number): number => {
   return Number.isFinite(parsed) ? parsed : fallback;
 };
 
+const GITLAB_API_RETRIES = parseNumber(process.env.GITLAB_API_RETRIES, 3);
+const GITLAB_API_RETRY_BASE_MS = parseNumber(process.env.GITLAB_API_RETRY_BASE_MS, 500);
+const GITLAB_API_TIMEOUT_MS = parseNumber(process.env.GITLAB_API_TIMEOUT_MS, 10000);
+
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME ?? 'mr-bot';
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
@@ -64,6 +70,13 @@ export const config = {
   gitlab: {
     path: GITLAB_WEBHOOK_PATH,
     token: process.env.GITLAB_WEBHOOK_TOKEN,
+    api: {
+      baseUrl: GITLAB_API_BASE_URL,
+      token: GITLAB_API_TOKEN,
+      retries: GITLAB_API_RETRIES,
+      retryBaseMs: GITLAB_API_RETRY_BASE_MS,
+      timeoutMs: GITLAB_API_TIMEOUT_MS,
+    },
   },
   mongo: {
     uri: MONGODB_URI,

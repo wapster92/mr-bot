@@ -1,5 +1,6 @@
 export type UserRecord = {
   gitlabUsername: string;
+  gitlabUserId?: number;
   telegramUsername?: string;
   telegramUserId?: number;
   chatId?: number;

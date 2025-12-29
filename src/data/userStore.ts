@@ -15,6 +15,7 @@ const getCollection = async (): Promise<Collection<UserDocument>> => {
   const db = await getDb();
   const collection = db.collection<UserDocument>(COLLECTION_NAME);
   await collection.createIndex({ gitlabUsernameLower: 1 }, { unique: true });
+  await collection.createIndex({ gitlabUserId: 1 }, { unique: true, sparse: true });
   await collection.createIndex({ telegramUsernameLower: 1 }, { unique: true, sparse: true });
   await collection.createIndex({ telegramUserId: 1 }, { unique: true, sparse: true });
   await collection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
@@ -156,20 +157,27 @@ export const getChatIdByUsername = async (username: string): Promise<number | un
 export const upsertGitlabUserProfile = async (
   username: string,
   name?: string,
+  gitlabUserId?: number,
 ): Promise<void> => {
-  if (!username || !name) {
+  if (!username) {
     return;
   }
   const collection = await getCollection();
+  const setPayload: Record<string, unknown> = {
+    gitlabUsername: username,
+    gitlabUsernameLower: normalizeUsername(username),
+    updatedAt: new Date(),
+  };
+  if (name) {
+    setPayload.name = name;
+  }
+  if (gitlabUserId) {
+    setPayload.gitlabUserId = gitlabUserId;
+  }
   await collection.updateOne(
     { gitlabUsernameLower: normalizeUsername(username), isAllowed: true },
     {
-      $set: {
-        gitlabUsername: username,
-        gitlabUsernameLower: normalizeUsername(username),
-        name,
-        updatedAt: new Date(),
-      },
+      $set: setPayload,
     },
   );
 };
@@ -185,4 +193,18 @@ export const getGitlabUserProfile = async (
     gitlabUsernameLower: normalizeUsername(username),
     isAllowed: true,
   });
+};
+
+export const getGitlabUserIdByUsername = async (
+  username?: string,
+): Promise<number | undefined> => {
+  if (!username) {
+    return undefined;
+  }
+  const collection = await getCollection();
+  const doc = await collection.findOne({
+    gitlabUsernameLower: normalizeUsername(username),
+    isAllowed: true,
+  });
+  return doc?.gitlabUserId;
 };
