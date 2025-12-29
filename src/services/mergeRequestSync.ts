@@ -294,9 +294,9 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       }
 
       const normalizedApprovalsRequired =
-        typeof update.approvalsRequired === 'number' && update.approvalsRequired > 0
+        typeof update.approvalsRequired === 'number'
           ? update.approvalsRequired
-          : typeof mr.approvalsRequired === 'number' && mr.approvalsRequired > 0
+          : typeof mr.approvalsRequired === 'number'
           ? mr.approvalsRequired
           : config.approvals.defaultRequired;
       update.approvalsRequired = normalizedApprovalsRequired;
@@ -305,10 +305,13 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         update.approvalsLeft === null ||
         typeof update.approvalsLeft !== 'number'
       ) {
-        update.approvalsLeft =
-          typeof mr.approvalsLeft === 'number' && mr.approvalsLeft >= 0
-            ? mr.approvalsLeft
-            : normalizedApprovalsRequired;
+        if (typeof mr.approvalsLeft === 'number' && mr.approvalsLeft >= 0) {
+          update.approvalsLeft = mr.approvalsLeft;
+        } else if (typeof normalizedApprovalsRequired === 'number') {
+          update.approvalsLeft = normalizedApprovalsRequired;
+        } else {
+          update.approvalsLeft = config.approvals.defaultRequired;
+        }
       }
       if (typeof update.approvalsLeft === 'number' && update.approvalsLeft < 0) {
         update.approvalsLeft = 0;

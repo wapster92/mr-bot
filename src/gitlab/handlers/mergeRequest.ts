@@ -180,20 +180,22 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       doc.approvalsRequired = fallbackRequired;
     }
   }
-  const normalizedApprovalsRequired =
-    typeof doc.approvalsRequired === 'number' && doc.approvalsRequired > 0
-      ? doc.approvalsRequired
-      : config.approvals.defaultRequired;
-  doc.approvalsRequired = normalizedApprovalsRequired;
   if (
     doc.approvalsLeft === undefined ||
     doc.approvalsLeft === null ||
     typeof doc.approvalsLeft !== 'number'
   ) {
-    doc.approvalsLeft =
+    const fallbackLeft =
       typeof attrs.approvals_left === 'number'
         ? attrs.approvals_left
-        : existingDoc?.approvalsLeft ?? normalizedApprovalsRequired;
+        : existingDoc?.approvalsLeft;
+    if (typeof fallbackLeft === 'number') {
+      doc.approvalsLeft = fallbackLeft;
+    } else if (typeof doc.approvalsRequired === 'number') {
+      doc.approvalsLeft = doc.approvalsRequired;
+    } else {
+      doc.approvalsLeft = config.approvals.defaultRequired;
+    }
   }
   if (typeof doc.approvalsLeft === 'number' && doc.approvalsLeft < 0) {
     doc.approvalsLeft = 0;

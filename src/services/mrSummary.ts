@@ -38,7 +38,9 @@ export const buildMergeRequestMessages = async (
         ? `${Math.min(approvedBy.length, reviewers.length)}/${reviewers.length}`
         : undefined;
     const approvalsLine =
-      approvalsRequired !== undefined && approvalsLeft !== undefined
+      approvalsRequired === 0 && approvalsLeft === 0
+        ? 'Апрувы: не требуются'
+        : approvalsRequired !== undefined && approvalsLeft !== undefined
         ? `Апрувы: ${approvalsGiven}/${approvalsRequired} (осталось ${Math.max(
             approvalsLeft,
             0,
