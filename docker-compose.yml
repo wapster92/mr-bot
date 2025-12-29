@@ -12,15 +12,17 @@ services:
       - mongo_data:/data/db
 
   mongoku:
-    image: ghcr.io/mongoku/mongoku:latest
+    image: mongo-express:1.0.2
     restart: unless-stopped
     environment:
-      MONGOKU_SERVER: 0.0.0.0
-      MONGOKU_PORT: 3100
-      MONGOKU_DATABASE_URL: ${MONGOKU_DATABASE_URL}
-      MONGOKU_DB: ${MONGOKU_DB:-mr-bot}
+      ME_CONFIG_MONGODB_SERVER: mongo
+      ME_CONFIG_MONGODB_ADMINUSERNAME: ${MONGO_INITDB_ROOT_USERNAME}
+      ME_CONFIG_MONGODB_ADMINPASSWORD: ${MONGO_INITDB_ROOT_PASSWORD}
+      ME_CONFIG_MONGODB_ENABLE_ADMIN: "true"
+      ME_CONFIG_BASICAUTH: "false"
+      ME_CONFIG_SITE_BASEURL: /dbpanel
     ports:
-      - "127.0.0.1:3100:3100"
+      - "127.0.0.1:3100:8081"
     depends_on:
       - mongo
 
