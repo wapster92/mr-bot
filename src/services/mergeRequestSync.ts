@@ -81,15 +81,18 @@ const syncReviewersToGitlab = async (
 };
 
 const backfillMissingMergeRequests = async (): Promise<void> => {
-  const projectIds = await listProjectIds();
-  if (!projectIds.length) {
+  const allowedProjectIds =
+    config.gitlab.api.allowedProjectIds && config.gitlab.api.allowedProjectIds.length
+      ? config.gitlab.api.allowedProjectIds
+      : await listProjectIds();
+  if (!allowedProjectIds.length) {
     return;
   }
 
   const existing = await listOpenMergeRequests();
   const existingKeys = new Set(existing.map((mr) => `${mr.projectId}:${mr.iid}`));
 
-  for (const projectId of projectIds) {
+  for (const projectId of allowedProjectIds) {
     const mrs = await fetchProjectMergeRequests(projectId, 'opened');
     if (!mrs?.length) {
       continue;
@@ -107,7 +110,7 @@ const backfillMissingMergeRequests = async (): Promise<void> => {
         : {};
       const doc = {
         projectId: mr.project_id,
-        projectPath: '',
+        projectPath: mr.project_path ?? '',
         mrId: mr.id ?? 0,
         iid: mr.iid,
         title: mr.title ?? '—',

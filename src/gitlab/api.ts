@@ -42,6 +42,7 @@ export type GitlabMergeRequestListItem = {
   id?: number;
   iid?: number;
   project_id?: number;
+  project_path?: string;
   title?: string;
   description?: string;
   state?: string;
@@ -304,37 +305,62 @@ export const fetchProjectMergeRequests = async (
   }
   const client = getClient(api);
   try {
-    const mrs: any = await withRetry(api, `MergeRequests.all project ${projectId}`, () =>
-      client.MergeRequests.all({
-        projectId,
-        state,
-        scope: 'all',
-        withMergeStatusRecheck: true,
-      }),
-    );
-    if (!Array.isArray(mrs)) {
-      return undefined;
+    let page = 1;
+    const perPage = 100;
+    const all: GitlabMergeRequestListItem[] = [];
+    // Gitbeaker REST с withRetry на каждую страницу
+    // Останавливаемся, если вернулась пустая страница.
+    // Ограничиваемся 50 страницами, чтобы не зависнуть (5k MR).
+    while (page <= 50) {
+      const mrs: any = await withRetry(
+        api,
+        `MergeRequests.all project ${projectId} page ${page}`,
+        () =>
+          client.MergeRequests.all({
+            projectId,
+            state,
+            scope: 'all',
+            withMergeStatusRecheck: true,
+            page,
+            perPage,
+          }),
+      );
+      if (!Array.isArray(mrs) || mrs.length === 0) {
+        break;
+      }
+      for (const mr of mrs) {
+        const item: GitlabMergeRequestListItem = {};
+        if (typeof mr.id === 'number') item.id = mr.id;
+        if (typeof mr.iid === 'number') item.iid = mr.iid;
+        item.project_id = typeof mr.project_id === 'number' ? mr.project_id : projectId;
+        if (typeof mr.title === 'string') item.title = mr.title;
+        if (typeof mr.description === 'string') item.description = mr.description;
+        if (typeof mr.state === 'string') item.state = mr.state;
+        if (typeof mr.source_branch === 'string') item.source_branch = mr.source_branch;
+        if (typeof mr.target_branch === 'string') item.target_branch = mr.target_branch;
+        if (typeof mr.web_url === 'string') item.web_url = mr.web_url;
+        if (typeof mr.merge_status === 'string') item.merge_status = mr.merge_status;
+        if (typeof mr.detailed_merge_status === 'string')
+          item.detailed_merge_status = mr.detailed_merge_status;
+        if (typeof mr.created_at === 'string') item.created_at = mr.created_at;
+        if (typeof mr.updated_at === 'string') item.updated_at = mr.updated_at;
+        const author = toGitlabUser(mr.author);
+        if (author) item.author = author;
+        // path_with_namespace появляется в списке MR
+        if (typeof mr.references?.full === 'string') {
+          const match = mr.references.full.match(/^(.+)!/);
+          if (match?.[1]) {
+            item.project_path = match[1];
+          }
+        }
+        all.push(item);
+      }
+      if (mrs.length < perPage) {
+        break;
+      }
+      page += 1;
     }
-    return mrs.map((mr) => {
-      const item: GitlabMergeRequestListItem = {};
-      if (typeof mr.id === 'number') item.id = mr.id;
-      if (typeof mr.iid === 'number') item.iid = mr.iid;
-      item.project_id = typeof mr.project_id === 'number' ? mr.project_id : projectId;
-      if (typeof mr.title === 'string') item.title = mr.title;
-      if (typeof mr.description === 'string') item.description = mr.description;
-      if (typeof mr.state === 'string') item.state = mr.state;
-      if (typeof mr.source_branch === 'string') item.source_branch = mr.source_branch;
-      if (typeof mr.target_branch === 'string') item.target_branch = mr.target_branch;
-      if (typeof mr.web_url === 'string') item.web_url = mr.web_url;
-      if (typeof mr.merge_status === 'string') item.merge_status = mr.merge_status;
-      if (typeof mr.detailed_merge_status === 'string')
-        item.detailed_merge_status = mr.detailed_merge_status;
-      if (typeof mr.created_at === 'string') item.created_at = mr.created_at;
-      if (typeof mr.updated_at === 'string') item.updated_at = mr.updated_at;
-      const author = toGitlabUser(mr.author);
-      if (author) item.author = author;
-      return item;
-    });
+    return all;
   } catch (error) {
     console.warn(`[gitlab-api] MergeRequests.all failed: ${String(error)}`);
     return undefined;

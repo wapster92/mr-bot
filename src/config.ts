@@ -57,6 +57,11 @@ const GITLAB_API_TIMEOUT_MS = parseNumber(process.env.GITLAB_API_TIMEOUT_MS, 100
 const MONGODB_URI = process.env.MONGODB_URI;
 const MONGODB_DB_NAME = process.env.MONGODB_DB_NAME ?? 'mr-bot';
 const JIRA_BASE_URL = process.env.JIRA_BASE_URL;
+const GITLAB_ALLOWED_PROJECT_IDS = process.env.GITLAB_ALLOWED_PROJECT_IDS
+  ? process.env.GITLAB_ALLOWED_PROJECT_IDS.split(',')
+      .map((id) => Number(id.trim()))
+      .filter((id) => Number.isFinite(id))
+  : undefined;
 
 export const config = {
   botToken: BOT_TOKEN,
@@ -76,6 +81,7 @@ export const config = {
       retries: GITLAB_API_RETRIES,
       retryBaseMs: GITLAB_API_RETRY_BASE_MS,
       timeoutMs: GITLAB_API_TIMEOUT_MS,
+      allowedProjectIds: GITLAB_ALLOWED_PROJECT_IDS,
     },
   },
   mongo: {
