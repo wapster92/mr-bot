@@ -158,10 +158,12 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     }
 
     const messages = await buildMergeRequestMessages(mergeRequests);
-    await ctx.reply(messages.join('\n\n'), {
-      parse_mode: 'HTML',
-      link_preview_options: { is_disabled: true },
-    });
+    for (const message of messages) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    }
   });
 
   bot.command('queue_errors', async (ctx) => {
