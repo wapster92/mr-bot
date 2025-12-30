@@ -136,33 +136,25 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       return;
     }
 
-    const leadsMessage = buildLintPassedLeadMessage({
+    const authorUsername = doc.author.gitlabUsername;
+    if (!authorUsername) {
+      console.warn('[pipeline] MR author not set for lint success');
+      return;
+    }
+    const authorRecipient = await getRecipientByGitlabUsername(authorUsername);
+    if (!authorRecipient) {
+      console.warn(`[pipeline] Cannot notify MR author on lint success: ${authorUsername} not mapped`);
+      return;
+    }
+    const message = buildLintPassedMessage({
       title: doc.title ?? '—',
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), leadsMessage, {
-      eventType: 'lint_passed_lead',
+    await deliverHtmlMessage(bot, authorRecipient, message, {
+      eventType: 'lint_passed_author',
       projectId,
       mrIid: iid,
     });
-
-    for (const reviewer of reviewers) {
-      const reviewerRecipient = await getRecipientByGitlabUsername(reviewer);
-      if (!reviewerRecipient) {
-        console.warn(`[pipeline] Cannot notify reviewer ${reviewer}: no Telegram mapping`);
-        continue;
-      }
-      const message = buildLintPassedMessage({
-        title: doc.title ?? '—',
-        url: doc.url ?? '—',
-        taskUrl: doc.taskUrl,
-      });
-      await deliverHtmlMessage(bot, reviewerRecipient, message, {
-        eventType: 'lint_passed_reviewer',
-        projectId,
-        mrIid: iid,
-      });
-    }
   }
 };

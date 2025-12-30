@@ -57,7 +57,7 @@ export const buildLintFailedMessage = (input: MergeRequestMessageInput): string 
 };
 
 export const buildLintPassedMessage = (input: MergeRequestMessageInput): string => {
-  const header = `✅ MR "${escapeHtml(input.title)}" прошёл линт. Пора провести ревью.`;
+  const header = `✅ MR "${escapeHtml(input.title)}" прошёл линт.`;
   const parts = buildMrParts(input, header);
   return parts.filter(Boolean).join('\n');
 };
