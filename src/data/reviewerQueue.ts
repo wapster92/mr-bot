@@ -15,8 +15,7 @@ const getCollection = async (): Promise<Collection<ReviewerQueueDocument>> => {
 };
 
 const baseReviewerList = async (): Promise<string[]> => {
-  const reviewers = await listActiveReviewers();
-  return reviewers;
+  return  await listActiveReviewers();
 };
 
 export const refreshQueue = async (): Promise<string[]> => {

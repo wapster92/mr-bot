@@ -17,7 +17,7 @@ import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../mes
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { listLeadUsers, getGitlabUserIdByUsername, upsertGitlabUserProfile } from '../data/userStore';
+import { getGitlabUserIdByUsername, upsertGitlabUserProfile } from '../data/userStore';
 import { pullReviewers } from '../data/reviewerQueue';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
@@ -152,7 +152,7 @@ const maybeNotifyApprovals = async (
 ): Promise<void> => {
   const approvalsRequiredRaw = current.approvalsRequired;
   const approvalsRequired =
-    typeof approvalsRequiredRaw === 'number' && approvalsRequiredRaw > 0
+    typeof approvalsRequiredRaw === 'number' && approvalsRequiredRaw >= 0
       ? approvalsRequiredRaw
       : config.approvals.defaultRequired;
   const approvalsLeftRaw = current.approvalsLeft;
@@ -165,7 +165,7 @@ const maybeNotifyApprovals = async (
   const approversCount = uniqueApprovers.length;
   const approvalTriggered =
     approvalsRequired > 0
-      ? approvalsLeft <= 0 || approversCount >= approvalsRequired
+      ? (approvalsLeft <= 0 || approversCount >= approvalsRequired) && approversCount > 0
       : false;
 
   if (approvalTriggered && !existing.finalReviewNotified) {
@@ -367,22 +367,11 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         await updateMergeRequest(mr.projectId, mr.iid, update);
       }
 
-      // Назначаем ревьюеров, если их нет или только один (используем очередь, плюс лидер).
+      // Назначаем ревьюеров, если их нет или только один (используем очередь разработчиков).
       const currentReviewers =
         (update.reviewers as string[] | undefined) ?? mr.reviewers ?? [];
-      const leads = await listLeadUsers();
-      const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
-      const leadUsernamesLower = new Set(
-        leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
-      );
-      const currentLower = currentReviewers.map((r) => r.toLowerCase());
-      const currentLeadPresent = currentLower.some((r) => leadUsernamesLower.has(r));
-      const currentDevReviewers = currentReviewers.filter(
-        (r) => !leadUsernamesLower.has(r.toLowerCase()),
-      );
-
-      const neededDev = Math.max(0, 2 - currentDevReviewers.length);
-      if (neededDev > 0 || (!currentLeadPresent && leadUsername)) {
+      const neededDev = Math.max(0, 2 - currentReviewers.length);
+      if (neededDev > 0) {
         const exclude = [
           ...currentReviewers,
           mr.author?.gitlabUsername ?? '',
@@ -390,21 +379,11 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
           .filter(Boolean)
           .map((r) => r.toLowerCase());
         const picked = await pullReviewers(exclude);
-        const addDevs = picked
-          .filter((r) => !leadUsernamesLower.has(r.toLowerCase()))
-          .slice(0, neededDev);
+        const addDevs = picked.slice(0, neededDev);
 
         const assignedSet = new Set<string>(currentReviewers);
         for (const dev of addDevs) {
           assignedSet.add(dev);
-        }
-        if (
-          leadUsername &&
-          !assignedSet.has(leadUsername) &&
-          (!mr.author?.gitlabUsername ||
-            mr.author.gitlabUsername.toLowerCase() !== leadUsername.toLowerCase())
-        ) {
-          assignedSet.add(leadUsername);
         }
         const assigned = Array.from(assignedSet);
         if (assigned.length) {

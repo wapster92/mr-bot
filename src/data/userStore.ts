@@ -37,6 +37,22 @@ export const getUserByTelegramUsername = async (
   );
 };
 
+export const getReviewerByTelegramUsername = async (
+  username?: string,
+): Promise<UserDocument | undefined> => {
+  if (!username) {
+    return undefined;
+  }
+  const collection = await getCollection();
+  return (
+    (await collection.findOne({
+      telegramUsernameLower: normalizeUsername(username),
+      gitlabUsername: { $type: 'string' },
+      $or: [{ isAllowed: true }, { isActive: true }],
+    })) ?? undefined
+  );
+};
+
 export const getUserByGitlabUsername = async (
   username?: string,
 ): Promise<UserDocument | undefined> => {

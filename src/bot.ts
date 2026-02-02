@@ -1,5 +1,10 @@
-import { Context, Telegraf } from 'telegraf';
-import { getUserByTelegramUsername, persistUserChatId, upsertAllowedUser } from './data/userStore';
+import { Context, Markup, Telegraf } from 'telegraf';
+import {
+  getReviewerByTelegramUsername,
+  getUserByTelegramUsername,
+  persistUserChatId,
+  upsertAllowedUser,
+} from './data/userStore';
 import { listActiveMergeRequests, listPendingReviewsForReviewer } from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
@@ -8,6 +13,8 @@ import { flushNotificationQueue } from './services/notificationQueue';
 import { listErroredNotifications } from './data/notificationQueueRepository';
 
 export type BotContext = Context;
+
+const mainKeyboard = Markup.keyboard([['/review', '/mrs'], ['/help']]).resize();
 
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
@@ -37,7 +44,10 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     if (telegramUser.id) {
       try {
         await persistUserChatId(telegramUser.id, ctx.chat.id, telegramUser.username);
-        await ctx.reply('Привет! Я запомнил этот чат 📝. Введи /help, чтобы увидеть команды.');
+        await ctx.reply(
+          'Привет! Я запомнил этот чат 📝. Введи /help, чтобы увидеть команды.',
+          mainKeyboard,
+        );
       } catch (error) {
         console.error('Failed to persist chat id', error);
         await ctx.reply('Привет! Я тебя узнал, но не смог сохранить чат. Попробуй позже.');
@@ -57,13 +67,14 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         '/mrs — показать активные MR и их статус',
         '/allow — добавить пользователя в whitelist (только лиды)',
       ].join('\n'),
+      mainKeyboard,
     ),
   );
 
   bot.command('status', (ctx) => ctx.reply('Все системы в норме ✅'));
 
   bot.command('review', async (ctx) => {
-    const user = await getUserByTelegramUsername(ctx.from?.username);
+    const user = await getReviewerByTelegramUsername(ctx.from?.username);
     if (!user) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
       return;

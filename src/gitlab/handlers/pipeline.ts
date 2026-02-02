@@ -9,8 +9,6 @@ import {
 } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
-import { pullReviewers } from '../../data/reviewerQueue';
-import { listLeadUsers } from '../../data/userStore';
 import { fetchPipelineJobs } from '../api';
 
 const isLintPipeline = (payload: any): boolean => {
@@ -109,28 +107,6 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
   }
 
   if (lintStatus === 'success') {
-    if (!reviewers.length) {
-      const authorUsername = doc.author.gitlabUsername;
-      const baseReviewers = await pullReviewers(authorUsername ? [authorUsername] : []);
-      const leads = await listLeadUsers();
-      const leadUsername = leads.find((lead) => lead.gitlabUsername)?.gitlabUsername;
-      const assignedReviewers = [...baseReviewers];
-      if (
-        leadUsername &&
-        leadUsername !== authorUsername &&
-        !assignedReviewers.some(
-          (reviewer) => reviewer.toLowerCase() === leadUsername.toLowerCase(),
-        )
-      ) {
-        assignedReviewers.push(leadUsername);
-      }
-
-      if (assignedReviewers.length) {
-        reviewers = assignedReviewers;
-        await updateMergeRequest(projectId, iid, { reviewers: assignedReviewers });
-      }
-    }
-
     if (!reviewers.length) {
       console.warn('[pipeline] No reviewers assigned for MR', doc.iid);
       return;

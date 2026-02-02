@@ -4,7 +4,7 @@ import {
   findMergeRequest,
   updateMergeRequest,
 } from '../../data/mergeRequestRepository';
-import { getUserByGitlabUsername, listLeadUsers } from '../../data/userStore';
+import { getUserByGitlabUsername } from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
 import {
   buildFinalReviewMessage,
@@ -19,6 +19,7 @@ import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { config } from '../../config';
+import { pullReviewers } from '../../data/reviewerQueue';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -57,6 +58,18 @@ const isDraft = (attrs: any): boolean => {
   }
   const title: string = attrs.title ?? '';
   return /^draft[: ]/i.test(title.trim());
+};
+
+const assignReviewersIfNeeded = async (
+  doc: MergeRequestDocument,
+): Promise<string[] | undefined> => {
+  if (doc.reviewers?.length) {
+    return doc.reviewers;
+  }
+  const authorUsername = doc.author.gitlabUsername;
+  const baseReviewers = await pullReviewers(authorUsername ? [authorUsername] : []);
+  const assignedReviewers = [...baseReviewers];
+  return assignedReviewers.length ? assignedReviewers : undefined;
 };
 
 export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
@@ -131,6 +144,16 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     author,
     action: attrs.action,
   };
+
+  const apiReviewerUsernames =
+    apiMergeRequest?.reviewers
+      ?.map((reviewer) => reviewer.username)
+      .filter((username): username is string => Boolean(username)) ?? [];
+  if (apiReviewerUsernames.length) {
+    doc.reviewers = apiReviewerUsernames;
+  } else if (existingDoc?.reviewers?.length) {
+    doc.reviewers = existingDoc.reviewers;
+  }
 
   if (attrs.description) {
     doc.description = attrs.description;
@@ -218,6 +241,17 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   const updatedAt = parseDate(attrs.updated_at);
   if (updatedAt) {
     doc.updatedAt = updatedAt;
+  }
+
+  if (
+    (attrs.action === 'open' || attrs.action === 'update') &&
+    !isDraft(attrs) &&
+    !doc.reviewers?.length
+  ) {
+    const assignedReviewers = await assignReviewersIfNeeded(doc);
+    if (assignedReviewers?.length) {
+      doc.reviewers = assignedReviewers;
+    }
   }
 
   if (attrs.action === 'open' && !isDraft(attrs)) {
@@ -319,7 +353,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         ? approvalsLeft <= 0
         : approversCount >= approvalsRequired
       : false;
-  if (approvalTriggered && !existingDoc?.finalReviewNotified) {
+  if (approvalTriggered && approversCount > 0 && !existingDoc?.finalReviewNotified) {
     const message = buildFinalReviewMessage({
       title: doc.title ?? '—',
       url: doc.url ?? '—',
