@@ -4,7 +4,7 @@ import {
   findMergeRequest,
   updateMergeRequest,
 } from '../../data/mergeRequestRepository';
-import { getUserByGitlabUsername } from '../../data/userStore';
+import { getUserByGitlabUsername, listLeadUsers } from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
 import {
   buildFinalReviewMessage,

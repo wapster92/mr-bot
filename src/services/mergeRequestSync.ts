@@ -17,7 +17,7 @@ import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../mes
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { getGitlabUserIdByUsername, upsertGitlabUserProfile } from '../data/userStore';
+import { getGitlabUserIdByUsername, listLeadUsers, upsertGitlabUserProfile } from '../data/userStore';
 import { pullReviewers } from '../data/reviewerQueue';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
