@@ -63,12 +63,17 @@ const isDraft = (attrs: any): boolean => {
 const assignReviewersIfNeeded = async (
   doc: MergeRequestDocument,
 ): Promise<string[] | undefined> => {
-  if (doc.reviewers?.length) {
-    return doc.reviewers;
+  const existing = doc.reviewers ?? [];
+  const needed = Math.max(0, 2 - existing.length);
+  if (needed === 0) {
+    return existing;
   }
   const authorUsername = doc.author.gitlabUsername;
-  const baseReviewers = await pullReviewers(authorUsername ? [authorUsername] : []);
-  const assignedReviewers = [...baseReviewers];
+  const exclude = [...existing, ...(authorUsername ? [authorUsername] : [])]
+    .filter(Boolean)
+    .map((name) => name.toLowerCase());
+  const baseReviewers = await pullReviewers(exclude);
+  const assignedReviewers = [...existing, ...baseReviewers.slice(0, needed)];
   return assignedReviewers.length ? assignedReviewers : undefined;
 };
 
@@ -145,13 +150,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     action: attrs.action,
   };
 
-  const apiReviewerUsernames =
-    apiMergeRequest?.reviewers
-      ?.map((reviewer) => reviewer.username)
-      .filter((username): username is string => Boolean(username)) ?? [];
-  if (apiReviewerUsernames.length) {
-    doc.reviewers = apiReviewerUsernames;
-  } else if (existingDoc?.reviewers?.length) {
+  if (existingDoc?.reviewers?.length) {
     doc.reviewers = existingDoc.reviewers;
   }
 

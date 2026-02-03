@@ -80,6 +80,53 @@ const syncReviewersToGitlab = async (
   return { ok: true };
 };
 
+const normalizeOpenMergeRequests = async (): Promise<void> => {
+  const mergeRequests = await listOpenMergeRequests();
+  if (!mergeRequests.length) {
+    return;
+  }
+
+  const leads = await listLeadUsers();
+  const leadUsernamesLower = new Set(
+    leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
+  );
+
+  for (const mr of mergeRequests) {
+    const currentReviewers = mr.reviewers ?? [];
+    const filteredReviewers = currentReviewers.filter(
+      (reviewer) => !leadUsernamesLower.has(reviewer.toLowerCase()),
+    );
+    const needed = Math.max(0, 2 - filteredReviewers.length);
+    let updatedReviewers = filteredReviewers;
+
+    if (needed > 0) {
+      const exclude = [
+        ...filteredReviewers,
+        mr.author?.gitlabUsername ?? '',
+      ]
+        .filter(Boolean)
+        .map((name) => name.toLowerCase());
+      const picked = await pullReviewers(exclude);
+      updatedReviewers = [...filteredReviewers, ...picked.slice(0, needed)];
+    }
+
+    const changed =
+      updatedReviewers.length !== currentReviewers.length ||
+      updatedReviewers.some(
+        (reviewer, index) => reviewer !== currentReviewers[index],
+      );
+
+    if (changed) {
+      await updateMergeRequest(mr.projectId, mr.iid, {
+        reviewers: updatedReviewers,
+        reviewersSyncedAt: new Date(),
+        reviewersSyncFailedAt: undefined,
+        reviewersSyncError: undefined,
+      });
+    }
+  }
+};
+
 const backfillMissingMergeRequests = async (): Promise<void> => {
   const allowedProjectIds =
     config.gitlab.api.allowedProjectIds && config.gitlab.api.allowedProjectIds.length
@@ -256,12 +303,6 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       const update: Record<string, unknown> = {};
 
       if (apiMergeRequest) {
-        const apiReviewerUsernames =
-          apiMergeRequest.reviewers
-            ?.map((reviewer) => reviewer.username)
-            .filter((username): username is string => Boolean(username)) ?? [];
-        const reviewersToStore = mr.reviewers ?? apiReviewerUsernames;
-
         if (typeof apiMergeRequest.title === 'string') {
           update.title = apiMergeRequest.title;
         }
@@ -294,7 +335,6 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         if (updatedAt) {
           update.updatedAt = updatedAt;
         }
-        update.reviewers = reviewersToStore;
         if (apiMergeRequest.author) {
           const author = { ...(mr.author ?? {}) };
           let authorChanged = false;
@@ -437,7 +477,7 @@ export const startMergeRequestSync = (bot: Telegraf<BotContext>): void => {
     return;
   }
   syncBot = bot;
-  void syncOpenMergeRequests();
+  void normalizeOpenMergeRequests().then(syncOpenMergeRequests);
   syncTimer = setInterval(() => {
     void syncOpenMergeRequests();
   }, SYNC_INTERVAL_MS);

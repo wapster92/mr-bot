@@ -14,7 +14,20 @@ import { listErroredNotifications } from './data/notificationQueueRepository';
 
 export type BotContext = Context;
 
-const mainKeyboard = Markup.keyboard([['/review', '/mrs'], ['/help']]).resize();
+const mainKeyboard = Markup.keyboard([['На ревью', 'Все MR'], ['Помощь']]).resize();
+
+const helpCommand = (ctx: BotContext): Promise<any> =>
+  ctx.reply(
+    [
+      'Доступные команды:',
+      '/help — показать эту подсказку',
+      '/status — базовая проверка доступности бота',
+      '/review — показать MR, где нужен твой ревью',
+      '/mrs — показать активные MR и их статус',
+      '/allow — добавить пользователя в whitelist (только лиды)',
+    ].join('\n'),
+    mainKeyboard,
+  );
 
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
@@ -57,23 +70,11 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     }
   });
 
-  bot.command('help', (ctx) =>
-    ctx.reply(
-      [
-        'Доступные команды:',
-        '/help — показать эту подсказку',
-        '/status — базовая проверка доступности бота',
-        '/review — показать MR, где нужен твой ревью',
-        '/mrs — показать активные MR и их статус',
-        '/allow — добавить пользователя в whitelist (только лиды)',
-      ].join('\n'),
-      mainKeyboard,
-    ),
-  );
+  bot.command('help', helpCommand);
 
   bot.command('status', (ctx) => ctx.reply('Все системы в норме ✅'));
 
-  bot.command('review', async (ctx) => {
+  const handleReview = async (ctx: BotContext): Promise<void> => {
     const user = await getReviewerByTelegramUsername(ctx.from?.username);
     if (!user) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
@@ -97,7 +98,9 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         link_preview_options: { is_disabled: true },
       });
     }
-  });
+  };
+
+  bot.command('review', handleReview);
 
   bot.command('allow', async (ctx) => {
     const actor = await getUserByTelegramUsername(ctx.from?.username);
@@ -157,7 +160,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     ctx.reply(['Ты в whitelist ✅', ...info].join('\n'));
   });
 
-  bot.command('mrs', async (ctx) => {
+  const handleMrs = async (ctx: BotContext): Promise<void> => {
     const user = await getUserByTelegramUsername(ctx.from?.username);
     if (!user) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
@@ -177,7 +180,13 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         link_preview_options: { is_disabled: true },
       });
     }
-  });
+  };
+
+  bot.command('mrs', handleMrs);
+
+  bot.hears('На ревью', handleReview);
+  bot.hears('Все MR', handleMrs);
+  bot.hears('Помощь', helpCommand);
 
   bot.command('queue_errors', async (ctx) => {
     const actor = await getUserByTelegramUsername(ctx.from?.username);
