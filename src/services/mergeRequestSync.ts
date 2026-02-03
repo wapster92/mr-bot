@@ -120,8 +120,6 @@ const normalizeOpenMergeRequests = async (): Promise<void> => {
       await updateMergeRequest(mr.projectId, mr.iid, {
         reviewers: updatedReviewers,
         reviewersSyncedAt: new Date(),
-        reviewersSyncFailedAt: undefined,
-        reviewersSyncError: undefined,
       });
     }
   }
