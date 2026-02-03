@@ -18,6 +18,8 @@ export type GitlabMergeRequest = {
   web_url?: string;
   merge_status?: string;
   detailed_merge_status?: string;
+  work_in_progress?: boolean;
+  draft?: boolean;
   created_at?: string;
   updated_at?: string;
 };
@@ -51,6 +53,8 @@ export type GitlabMergeRequestListItem = {
   web_url?: string;
   merge_status?: string;
   detailed_merge_status?: string;
+  work_in_progress?: boolean;
+  draft?: boolean;
   created_at?: string;
   updated_at?: string;
   author?: GitlabUser;

@@ -85,3 +85,24 @@ export const buildMergeRequestCommentMessage = (
   parts.splice(1, 0, escapeHtml(input.noteText));
   return parts.filter(Boolean).join('\n');
 };
+
+export const buildReviewReminderMessage = (
+  input: MergeRequestMessageInput & { level: 1 | 2 | 3 },
+): string => {
+  const header =
+    input.level === 1
+      ? `⏳ Напоминание: MR "${escapeHtml(input.title)}" ждёт твоего ревью.`
+      : input.level === 2
+      ? `⚠️ MR "${escapeHtml(input.title)}" всё ещё без ревью. Нужна твоя проверка.`
+      : `🚨 Срочно: MR "${escapeHtml(input.title)}" не просмотрен. Нужен ревью.`;
+  const parts = buildMrParts(input, header);
+  return parts.filter(Boolean).join('\n');
+};
+
+export const buildReviewEscalationMessage = (
+  input: MergeRequestMessageInput & { reviewerLabel: string },
+): string => {
+  const header = `🚩 Эскалация: ревьюер ${escapeHtml(input.reviewerLabel)} не ответил по MR "${escapeHtml(input.title)}" 2 рабочих дня.`;
+  const parts = buildMrParts(input, header);
+  return parts.filter(Boolean).join('\n');
+};

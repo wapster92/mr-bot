@@ -5,6 +5,7 @@ import { createBot } from './bot';
 import { createGitLabWebhookHandler } from './gitlab/webhook';
 import { ensureMongoConnection } from './db/mongo';
 import { startMergeRequestSync } from './services/mergeRequestSync';
+import { startReviewReminderScheduler } from './services/reviewReminderScheduler';
 
 const bot = createBot(config.botToken);
 
@@ -24,6 +25,7 @@ let server: Server | undefined;
 const start = async (): Promise<void> => {
   await ensureMongoConnection();
   startMergeRequestSync(bot);
+  startReviewReminderScheduler(bot);
 
   if (config.mode === 'webhook') {
     const { domain, path, secretToken } = config.webhook;

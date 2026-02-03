@@ -20,6 +20,11 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { config } from '../../config';
 import { pullReviewers } from '../../data/reviewerQueue';
+import {
+  markAllRemindersInactiveForMr,
+  markReviewCompletedForApprovers,
+  syncReviewRemindersForMr,
+} from '../../services/reviewReminderService';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -52,12 +57,14 @@ const parseDate = (value?: string): Date | undefined => {
   return Number.isNaN(date.getTime()) ? undefined : date;
 };
 
+const isDraftTitle = (title?: string): boolean =>
+  /^draft[: ]/i.test((title ?? '').trim());
+
 const isDraft = (attrs: any): boolean => {
-  if (attrs.work_in_progress) {
+  if (attrs.work_in_progress || attrs.draft) {
     return true;
   }
-  const title: string = attrs.title ?? '';
-  return /^draft[: ]/i.test(title.trim());
+  return isDraftTitle(attrs.title);
 };
 
 const assignReviewersIfNeeded = async (
@@ -102,6 +109,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
   const { taskKey, taskUrl } = extractTaskInfo(attrs.source_branch);
   const existingDoc = await findMergeRequest(project.id, attrs.iid);
+  const wasDraft = existingDoc?.isDraft ?? false;
 
   const author = existingDoc?.author ? { ...existingDoc.author } : {};
   const apiAuthor = apiMergeRequest?.author;
@@ -148,7 +156,12 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     url: attrs.url,
     author,
     action: attrs.action,
+    isDraft: isDraft(attrs),
   };
+  const draftEnded = wasDraft && !doc.isDraft;
+  if (draftEnded) {
+    console.info(`[merge-request] Draft ended for MR ${doc.projectId}/${doc.iid}`);
+  }
 
   if (existingDoc?.reviewers?.length) {
     doc.reviewers = existingDoc.reviewers;
@@ -244,7 +257,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
 
   if (
     (attrs.action === 'open' || attrs.action === 'update') &&
-    !isDraft(attrs) &&
+    !doc.isDraft &&
     !doc.reviewers?.length
   ) {
     const assignedReviewers = await assignReviewersIfNeeded(doc);
@@ -253,7 +266,15 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     }
   }
 
-  if (attrs.action === 'open' && !isDraft(attrs)) {
+  await syncReviewRemindersForMr(
+    { projectId: doc.projectId, iid: doc.iid },
+    doc.reviewers ?? [],
+    new Date(),
+    doc.isDraft,
+    draftEnded,
+  );
+
+  if (attrs.action === 'open' && !doc.isDraft) {
     const reviewerLabels = doc.reviewers?.length
       ? await Promise.all(doc.reviewers.map((reviewer) => formatGitlabUserLabel(reviewer)))
       : [];
@@ -328,6 +349,7 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
         mrIid: doc.iid,
       });
     }
+    await markAllRemindersInactiveForMr({ projectId: doc.projectId, iid: doc.iid });
     return;
   }
 
@@ -345,6 +367,13 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
   const approversCount = uniqueApprovers.length;
+  if (doc.reviewers?.length && uniqueApprovers.length) {
+    await markReviewCompletedForApprovers(
+      { projectId: doc.projectId, iid: doc.iid },
+      doc.reviewers,
+      uniqueApprovers,
+    );
+  }
   // Notify only when the MR has zero approvals left or enough approvals were collected.
   const approvalTriggered =
     approvalsRequired > 0

@@ -5,6 +5,7 @@ import { persistGitlabUserProfileFromPayload } from './common';
 import { buildMergeRequestCommentMessage } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
+import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
@@ -31,6 +32,12 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
   const commenter = payload.user?.username;
   if (commenter && commenter.toLowerCase() === authorGitlab.toLowerCase()) {
     return;
+  }
+  if (commenter && doc.reviewers?.some((reviewer) => reviewer.toLowerCase() === commenter.toLowerCase())) {
+    await markReviewCompletedForReviewer(
+      { projectId: doc.projectId, iid: doc.iid },
+      commenter,
+    );
   }
 
   const authorRecipient = await getRecipientByGitlabUsername(authorGitlab);

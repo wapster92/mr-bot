@@ -19,6 +19,7 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
 import { getGitlabUserIdByUsername, listLeadUsers, upsertGitlabUserProfile } from '../data/userStore';
 import { pullReviewers } from '../data/reviewerQueue';
+import { markReviewCompletedForApprovers, syncReviewRemindersForMr } from './reviewReminderService';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -35,6 +36,9 @@ const parseDate = (value?: string): Date | undefined => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? undefined : date;
 };
+
+const isDraftTitle = (title?: string): boolean =>
+  /^draft[: ]/i.test((title ?? '').trim());
 
 const resolveReviewerIds = async (usernames: string[]): Promise<number[] | null> => {
   const reviewerIds: number[] = [];
@@ -92,6 +96,16 @@ const normalizeOpenMergeRequests = async (): Promise<void> => {
   );
 
   for (const mr of mergeRequests) {
+    const isDraft = mr.isDraft ?? isDraftTitle(mr.title);
+    if (isDraft) {
+      await syncReviewRemindersForMr(
+        { projectId: mr.projectId, iid: mr.iid },
+        mr.reviewers ?? [],
+        new Date(),
+        true,
+      );
+      continue;
+    }
     const currentReviewers = mr.reviewers ?? [];
     const filteredReviewers = currentReviewers.filter(
       (reviewer) => !leadUsernamesLower.has(reviewer.toLowerCase()),
@@ -122,6 +136,13 @@ const normalizeOpenMergeRequests = async (): Promise<void> => {
         reviewersSyncedAt: new Date(),
       });
     }
+    await syncReviewRemindersForMr(
+      { projectId: mr.projectId, iid: mr.iid },
+      updatedReviewers,
+      new Date(),
+      mr.isDraft ?? isDraftTitle(mr.title),
+      false,
+    );
   }
 };
 
@@ -153,23 +174,24 @@ const backfillMissingMergeRequests = async (): Promise<void> => {
       const author = mr.author?.username
         ? { gitlabUsername: mr.author.username, name: mr.author.name }
         : {};
-      const doc = {
-        projectId: mr.project_id,
-        projectPath: mr.project_path ?? '',
-        mrId: mr.id ?? 0,
-        iid: mr.iid,
-        title: mr.title ?? '—',
-        description: mr.description ?? '',
-        sourceBranch: mr.source_branch ?? '',
-        targetBranch: mr.target_branch ?? '',
-        url: mr.web_url ?? '',
-        author,
-        state: mr.state,
-        mergeStatus: mr.merge_status,
-        detailedMergeStatus: mr.detailed_merge_status,
-        createdAt: parseDate(mr.created_at) ?? new Date(),
-        updatedAt: parseDate(mr.updated_at) ?? new Date(),
-      };
+        const doc = {
+          projectId: mr.project_id,
+          projectPath: mr.project_path ?? '',
+          mrId: mr.id ?? 0,
+          iid: mr.iid,
+          title: mr.title ?? '—',
+          description: mr.description ?? '',
+          sourceBranch: mr.source_branch ?? '',
+          targetBranch: mr.target_branch ?? '',
+          url: mr.web_url ?? '',
+          author,
+          state: mr.state,
+          mergeStatus: mr.merge_status,
+          detailedMergeStatus: mr.detailed_merge_status,
+          isDraft: Boolean(mr.work_in_progress || mr.draft || isDraftTitle(mr.title ?? '')),
+          createdAt: parseDate(mr.created_at) ?? new Date(),
+          updatedAt: parseDate(mr.updated_at) ?? new Date(),
+        };
       await upsertMergeRequest(doc as any);
     }
   }
@@ -325,6 +347,18 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         if (typeof apiMergeRequest.detailed_merge_status === 'string') {
           update.detailedMergeStatus = apiMergeRequest.detailed_merge_status;
         }
+        if (
+          apiMergeRequest.work_in_progress !== undefined ||
+          apiMergeRequest.draft !== undefined ||
+          typeof apiMergeRequest.title === 'string'
+        ) {
+          const draftFlag = Boolean(
+            apiMergeRequest.work_in_progress ||
+              apiMergeRequest.draft ||
+              isDraftTitle(apiMergeRequest.title),
+          );
+          update.isDraft = draftFlag;
+        }
         const createdAt = parseDate(apiMergeRequest.created_at);
         if (createdAt) {
           update.createdAt = createdAt;
@@ -406,10 +440,15 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       }
 
       // Назначаем ревьюеров, если их нет или только один (используем очередь разработчиков).
-      const currentReviewers =
+      const previousDraft = mr.isDraft ?? isDraftTitle(mr.title);
+      const isDraft = (update.isDraft as boolean | undefined) ?? previousDraft;
+      if (previousDraft && !isDraft) {
+        console.info(`[sync] Draft ended for MR ${mr.projectId}/${mr.iid}`);
+      }
+      let currentReviewers =
         (update.reviewers as string[] | undefined) ?? mr.reviewers ?? [];
       const neededDev = Math.max(0, 2 - currentReviewers.length);
-      if (neededDev > 0) {
+      if (neededDev > 0 && !isDraft) {
         const exclude = [
           ...currentReviewers,
           mr.author?.gitlabUsername ?? '',
@@ -429,10 +468,27 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
             reviewers: assigned,
             reviewersSyncedAt: new Date(),
           };
-          updateReviewers.reviewersSyncFailedAt = undefined;
-          updateReviewers.reviewersSyncError = undefined;
           await updateMergeRequest(mr.projectId, mr.iid, updateReviewers);
+          currentReviewers = assigned;
         }
+      }
+
+      await syncReviewRemindersForMr(
+        { projectId: mr.projectId, iid: mr.iid },
+        currentReviewers,
+        new Date(),
+        isDraft,
+        previousDraft && !isDraft,
+      );
+
+      const approvers =
+        (update.approvedBy as string[] | undefined) ?? mr.approvedBy ?? [];
+      if (currentReviewers.length && approvers.length) {
+        await markReviewCompletedForApprovers(
+          { projectId: mr.projectId, iid: mr.iid },
+          currentReviewers,
+          approvers,
+        );
       }
 
       await maybeNotifyApprovals(
