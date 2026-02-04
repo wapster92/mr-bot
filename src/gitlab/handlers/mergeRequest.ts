@@ -353,16 +353,6 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     return;
   }
 
-  const approvalsLeft =
-    typeof doc.approvalsLeft === 'number'
-      ? doc.approvalsLeft
-      : typeof attrs.approvals_left === 'number'
-      ? attrs.approvals_left
-      : existingDoc?.approvalsLeft;
-  const approvalsRequired =
-    typeof doc.approvalsRequired === 'number'
-      ? doc.approvalsRequired
-      : existingDoc?.approvalsRequired ?? config.approvals.defaultRequired;
   const approvers =
     doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
@@ -374,13 +364,16 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       uniqueApprovers,
     );
   }
-  // Notify only when the MR has zero approvals left or enough approvals were collected.
-  const approvalTriggered =
-    approvalsRequired > 0
-      ? typeof approvalsLeft === 'number'
-        ? approvalsLeft <= 0
-        : approversCount >= approvalsRequired
-      : false;
+  const leads = await listLeadUsers();
+  const leadUsernames = leads
+    .map((lead) => lead.gitlabUsername)
+    .filter(Boolean)
+    .map((name) => name.toLowerCase());
+  const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
+  const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
+  const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
+
+  const approvalTriggered = nonLeadApprovers.length >= 2;
   if (approvalTriggered && approversCount > 0 && !existingDoc?.finalReviewNotified) {
     const message = buildFinalReviewMessage({
       title: doc.title ?? '—',
@@ -396,15 +389,6 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   }
 
   if (!existingDoc?.authorMergeNotified && approversCount >= 3) {
-    const leads = await listLeadUsers();
-    const leadUsernames = leads
-      .map((lead) => lead.gitlabUsername)
-      .filter(Boolean)
-      .map((name) => name.toLowerCase());
-    const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
-    const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
-    const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
-
     if (leadApprovers.length >= 1 && nonLeadApprovers.length >= 2) {
       const message = buildMergeReadyForAuthorMessage({
         title: doc.title ?? '—',

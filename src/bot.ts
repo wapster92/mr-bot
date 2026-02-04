@@ -2,6 +2,7 @@ import { Context, Markup, Telegraf } from 'telegraf';
 import {
   getReviewerByTelegramUsername,
   getUserByTelegramUsername,
+  listLeadUsers,
   persistUserChatId,
   upsertAllowedUser,
 } from './data/userStore';
@@ -14,20 +15,30 @@ import { listErroredNotifications } from './data/notificationQueueRepository';
 
 export type BotContext = Context;
 
-const mainKeyboard = Markup.keyboard([['На ревью', 'Все MR'], ['Помощь']]).resize();
+const buildMainKeyboard = (isLead: boolean): ReturnType<typeof Markup.keyboard> => {
+  const rows: string[][] = [['На ревью', 'Все MR']];
+  if (isLead) {
+    rows.push(['Финал']);
+  }
+  rows.push(['Помощь']);
+  return Markup.keyboard(rows).resize();
+};
 
-const helpCommand = (ctx: BotContext): Promise<any> =>
-  ctx.reply(
+const helpCommand = async (ctx: BotContext): Promise<any> => {
+  const user = await getUserByTelegramUsername(ctx.from?.username);
+  return ctx.reply(
     [
       'Доступные команды:',
       '/help — показать эту подсказку',
       '/status — базовая проверка доступности бота',
       '/review — показать MR, где нужен твой ревью',
       '/mrs — показать активные MR и их статус',
+      '/final — показать MR для финальной проверки (только лиды)',
       '/allow — добавить пользователя в whitelist (только лиды)',
     ].join('\n'),
-    mainKeyboard,
+    buildMainKeyboard(Boolean(user?.isLead)),
   );
+};
 
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
@@ -59,7 +70,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         await persistUserChatId(telegramUser.id, ctx.chat.id, telegramUser.username);
         await ctx.reply(
           'Привет! Я запомнил этот чат 📝. Введи /help, чтобы увидеть команды.',
-          mainKeyboard,
+          buildMainKeyboard(Boolean(allowedUser.isLead)),
         );
       } catch (error) {
         console.error('Failed to persist chat id', error);
@@ -184,8 +195,52 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.command('mrs', handleMrs);
 
+  const handleFinal = async (ctx: BotContext): Promise<void> => {
+    const actor = await getUserByTelegramUsername(ctx.from?.username);
+    if (!actor?.isLead) {
+      await ctx.reply('Команда доступна только лидам.');
+      return;
+    }
+
+    const mergeRequests = await listActiveMergeRequests(50);
+    if (!mergeRequests.length) {
+      await ctx.reply('Активных MR не найдено.');
+      return;
+    }
+
+    const leads = await listLeadUsers();
+    const leadUsernamesLower = new Set(
+      leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
+    );
+
+    const candidates = mergeRequests.filter((mr) => {
+      if (mr.isDraft) return false;
+      const approvers = mr.approvedBy ?? [];
+      const nonLeadApprovers = approvers.filter(
+        (name) => !leadUsernamesLower.has(name.toLowerCase()),
+      );
+      return nonLeadApprovers.length >= 2;
+    });
+
+    if (!candidates.length) {
+      await ctx.reply('MR для финальной проверки не найдено.');
+      return;
+    }
+
+    const messages = await buildMergeRequestMessages(candidates);
+    for (const message of messages) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    }
+  };
+
+  bot.command('final', handleFinal);
+
   bot.hears('На ревью', handleReview);
   bot.hears('Все MR', handleMrs);
+  bot.hears('Финал', handleFinal);
   bot.hears('Помощь', helpCommand);
 
   bot.command('queue_errors', async (ctx) => {

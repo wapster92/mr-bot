@@ -217,23 +217,19 @@ const maybeNotifyApprovals = async (
     authorMergeNotified?: boolean | undefined;
   },
 ): Promise<void> => {
-  const approvalsRequiredRaw = current.approvalsRequired;
-  const approvalsRequired =
-    typeof approvalsRequiredRaw === 'number' && approvalsRequiredRaw >= 0
-      ? approvalsRequiredRaw
-      : config.approvals.defaultRequired;
-  const approvalsLeftRaw = current.approvalsLeft;
-  const approvalsLeft =
-    typeof approvalsLeftRaw === 'number' && approvalsLeftRaw >= 0
-      ? approvalsLeftRaw
-      : approvalsRequired;
   const approvers = current.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
   const approversCount = uniqueApprovers.length;
-  const approvalTriggered =
-    approvalsRequired > 0
-      ? (approvalsLeft <= 0 || approversCount >= approvalsRequired) && approversCount > 0
-      : false;
+  const leads = await listLeadUsers();
+  const leadUsernames = leads
+    .map((lead) => lead.gitlabUsername)
+    .filter(Boolean)
+    .map((name) => name.toLowerCase());
+  const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
+  const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
+  const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
+
+  const approvalTriggered = nonLeadApprovers.length >= 2;
 
   if (approvalTriggered && !existing.finalReviewNotified) {
     const message = buildFinalReviewMessage({
@@ -250,15 +246,6 @@ const maybeNotifyApprovals = async (
   }
 
   if (!existing.authorMergeNotified && approversCount >= 3) {
-    const leads = await listLeadUsers();
-    const leadUsernames = leads
-      .map((lead) => lead.gitlabUsername)
-      .filter(Boolean)
-      .map((name) => name.toLowerCase());
-    const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
-    const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
-    const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
-
     if (leadApprovers.length >= 1 && nonLeadApprovers.length >= 2) {
       const message = buildMergeReadyForAuthorMessage({
         title: mr.title ?? '—',
