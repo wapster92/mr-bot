@@ -3,13 +3,41 @@ import {
   fetchUserByUsername,
   updateMergeRequestReviewersAndLabels,
 } from '../gitlab/api';
-import { getGitlabUserIdByUsername, upsertGitlabUserProfile } from '../data/userStore';
+import {
+  getGitlabUserIdByUsername,
+  getGitlabUserProfile,
+  upsertGitlabUserProfile,
+} from '../data/userStore';
 
-const buildReviewerLabels = (reviewerUsernames: string[]): string[] =>
-  reviewerUsernames
-    .map((username) => username.trim())
-    .filter(Boolean)
-    .map((username) => `@${username}`);
+const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[]> => {
+  const labels: string[] = [];
+
+  for (const rawUsername of reviewerUsernames) {
+    const username = rawUsername.trim();
+    if (!username) {
+      continue;
+    }
+
+    const storedProfile = await getGitlabUserProfile(username);
+    if (storedProfile?.name?.trim()) {
+      labels.push(storedProfile.name.trim());
+      continue;
+    }
+
+    const apiUser = await fetchUserByUsername(username);
+    if (apiUser?.username) {
+      await upsertGitlabUserProfile(apiUser.username, apiUser.name, apiUser.id);
+    }
+    if (apiUser?.name?.trim()) {
+      labels.push(apiUser.name.trim());
+      continue;
+    }
+
+    labels.push(username);
+  }
+
+  return labels;
+};
 
 const resolveReviewerIds = async (usernames: string[]): Promise<number[] | null> => {
   const reviewerIds: number[] = [];
@@ -54,7 +82,7 @@ export const syncReviewersAndLabelsToGitlab = async (
     return { ok: false, error: 'cannot resolve reviewer ids' };
   }
 
-  const labels = buildReviewerLabels(reviewerUsernames);
+  const labels = await buildReviewerLabels(reviewerUsernames);
   const ok = await updateMergeRequestReviewersAndLabels(projectId, iid, reviewerIds, labels);
 
   if (ok) {
