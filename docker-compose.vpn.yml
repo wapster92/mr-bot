@@ -1,0 +1,35 @@
+services:
+  openvpn:
+    build:
+      context: .
+      dockerfile: deploy/openvpn/Dockerfile
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    ports:
+      - "127.0.0.1:3000:3000"
+    volumes:
+      - ${OPENVPN_RUNTIME_DIR:-./runtime/openvpn}:/vpn:ro
+    environment:
+      OPENVPN_CONFIG_FILE: /vpn/${OPENVPN_CONFIG_NAME:-client.ovpn}
+      OPENVPN_AUTH_FILE: /vpn/${OPENVPN_AUTH_NAME:-auth.txt}
+      OPENVPN_IGNORE_REDIRECT_GATEWAY: ${OPENVPN_IGNORE_REDIRECT_GATEWAY:-true}
+      OPENVPN_EXTRA_ARGS: ${OPENVPN_EXTRA_ARGS:-}
+      OPENVPN_VERBOSITY: ${OPENVPN_VERBOSITY:-3}
+    healthcheck:
+      test: ['CMD-SHELL', 'ip link show tun0 >/dev/null 2>&1']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+    restart: unless-stopped
+
+  bot:
+    network_mode: service:openvpn
+    ports: []
+    depends_on:
+      mongo:
+        condition: service_started
+      openvpn:
+        condition: service_started
