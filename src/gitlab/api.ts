@@ -10,6 +10,7 @@ type GitlabUser = {
 export type GitlabMergeRequest = {
   author?: GitlabUser;
   reviewers?: GitlabUser[];
+  labels?: string[];
   title?: string;
   description?: string;
   state?: string;
@@ -206,6 +207,9 @@ export const fetchMergeRequest = async (
     result.author = author;
   }
   result.reviewers = reviewers;
+  result.labels = Array.isArray(response?.labels)
+    ? response.labels.filter((label: unknown): label is string => typeof label === 'string')
+    : [];
   if (typeof response?.title === 'string') {
     result.title = response.title;
   }
@@ -404,6 +408,29 @@ export const setMergeRequestReviewers = async (
   const result = await withRetry(
     api,
     `MergeRequests.edit reviewers ${projectId}#${iid}`,
+    () => client.MergeRequests.edit(projectId, iid, payload),
+  );
+  return Boolean(result);
+};
+
+export const updateMergeRequestReviewersAndLabels = async (
+  projectId: number,
+  iid: number,
+  reviewerIds: number[],
+  labels: string[],
+): Promise<boolean> => {
+  const api = getApiConfig();
+  if (!api) {
+    return false;
+  }
+  const client = getClient(api);
+  const payload = {
+    reviewerIds,
+    labels: labels.join(','),
+  };
+  const result = await withRetry(
+    api,
+    `MergeRequests.edit reviewers+labels ${projectId}#${iid}`,
     () => client.MergeRequests.edit(projectId, iid, payload),
   );
   return Boolean(result);

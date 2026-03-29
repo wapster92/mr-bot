@@ -8,7 +8,6 @@ import {
 import {
   fetchMergeRequest,
   fetchMergeRequestApprovals,
-  fetchUserByUsername,
   fetchProjectMergeRequests,
 } from '../gitlab/api';
 import { persistGitlabUserProfiles } from '../gitlab/handlers/common';
@@ -17,9 +16,10 @@ import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../mes
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { getGitlabUserIdByUsername, listLeadUsers, upsertGitlabUserProfile } from '../data/userStore';
+import { listLeadUsers } from '../data/userStore';
 import { pullReviewers } from '../data/reviewerQueue';
 import { markReviewCompletedForApprovers, syncReviewRemindersForMr } from './reviewReminderService';
+import { syncReviewersAndLabelsToGitlab } from './reviewerLabelSync';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -40,48 +40,12 @@ const parseDate = (value?: string): Date | undefined => {
 const isDraftTitle = (title?: string): boolean =>
   /^draft[: ]/i.test((title ?? '').trim());
 
-const resolveReviewerIds = async (usernames: string[]): Promise<number[] | null> => {
-  const reviewerIds: number[] = [];
-  const missing: string[] = [];
-
-  for (const username of usernames) {
-    const storedId = await getGitlabUserIdByUsername(username);
-    if (storedId) {
-      reviewerIds.push(storedId);
-      continue;
-    }
-    const apiUser = await fetchUserByUsername(username);
-    if (apiUser?.id) {
-      reviewerIds.push(apiUser.id);
-      if (apiUser.username) {
-        await upsertGitlabUserProfile(apiUser.username, apiUser.name, apiUser.id);
-      }
-      continue;
-    }
-    missing.push(username);
-  }
-
-  if (missing.length) {
-    console.warn('[sync] Cannot resolve GitLab IDs for reviewers', missing.join(', '));
-    return null;
-  }
-
-  return reviewerIds;
-};
-
 const syncReviewersToGitlab = async (
   projectId: number,
   iid: number,
   reviewerUsernames: string[],
 ): Promise<{ ok: boolean; error?: string }> => {
-  if (!reviewerUsernames.length) {
-    return { ok: false, error: 'empty reviewer list' };
-  }
-  const reviewerIds = await resolveReviewerIds(reviewerUsernames);
-  if (!reviewerIds || !reviewerIds.length) {
-    return { ok: false, error: 'cannot resolve reviewer ids' };
-  }
-  return { ok: true };
+  return syncReviewersAndLabelsToGitlab(projectId, iid, reviewerUsernames);
 };
 
 const normalizeOpenMergeRequests = async (): Promise<void> => {
@@ -135,6 +99,14 @@ const normalizeOpenMergeRequests = async (): Promise<void> => {
         reviewers: updatedReviewers,
         reviewersSyncedAt: new Date(),
       });
+    }
+    if (updatedReviewers.length) {
+      const syncResult = await syncReviewersToGitlab(mr.projectId, mr.iid, updatedReviewers);
+      if (!syncResult.ok) {
+        console.warn(
+          `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,
+        );
+      }
     }
     await syncReviewRemindersForMr(
       { projectId: mr.projectId, iid: mr.iid },
@@ -457,6 +429,14 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
           };
           await updateMergeRequest(mr.projectId, mr.iid, updateReviewers);
           currentReviewers = assigned;
+        }
+      }
+      if (currentReviewers.length && !isDraft) {
+        const syncResult = await syncReviewersToGitlab(mr.projectId, mr.iid, currentReviewers);
+        if (!syncResult.ok) {
+          console.warn(
+            `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,
+          );
         }
       }
 

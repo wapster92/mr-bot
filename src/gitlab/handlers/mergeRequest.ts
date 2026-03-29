@@ -25,6 +25,7 @@ import {
   markReviewCompletedForApprovers,
   syncReviewRemindersForMr,
 } from '../../services/reviewReminderService';
+import { syncReviewersAndLabelsToGitlab } from '../../services/reviewerLabelSync';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -263,6 +264,19 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     const assignedReviewers = await assignReviewersIfNeeded(doc);
     if (assignedReviewers?.length) {
       doc.reviewers = assignedReviewers;
+    }
+  }
+
+  if ((attrs.action === 'open' || attrs.action === 'update') && !doc.isDraft && doc.reviewers?.length) {
+    const syncResult = await syncReviewersAndLabelsToGitlab(
+      doc.projectId,
+      doc.iid,
+      doc.reviewers,
+    );
+    if (!syncResult.ok) {
+      console.warn(
+        `[merge-request] Failed to sync reviewer labels for MR ${doc.projectId}/${doc.iid}: ${syncResult.error}`,
+      );
     }
   }
 
