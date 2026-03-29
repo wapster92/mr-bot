@@ -27,7 +27,7 @@ services:
 
   bot:
     network_mode: service:openvpn
-    ports: []
+    ports: !reset []
     environment:
       CORP_GITLAB_HOST: ${CORP_GITLAB_HOST:-gitlab.almi-partner.ru}
       CORP_GITLAB_IP: ${CORP_GITLAB_IP:-172.20.3.1}
