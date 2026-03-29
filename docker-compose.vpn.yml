@@ -28,6 +28,11 @@ services:
   bot:
     network_mode: service:openvpn
     ports: []
+    environment:
+      CORP_GITLAB_HOST: ${CORP_GITLAB_HOST:-gitlab.almi-partner.ru}
+      CORP_GITLAB_IP: ${CORP_GITLAB_IP:-172.20.3.1}
+      CORP_JIRA_HOST: ${CORP_JIRA_HOST:-jira.almi-partner.ru}
+      CORP_JIRA_IP: ${CORP_JIRA_IP:-172.20.3.3}
     depends_on:
       mongo:
         condition: service_started

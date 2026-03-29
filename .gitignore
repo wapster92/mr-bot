@@ -7,3 +7,4 @@ logs
 .idea
 runtime/openvpn/*
 !runtime/openvpn/.gitkeep
+*.Zone.Identifier

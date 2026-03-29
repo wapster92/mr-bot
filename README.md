@@ -18,7 +18,7 @@
 
 ## Docker Compose
 
-`docker-compose.yml` поднимает контейнер с ботом (Mongo остаётся облачной). Чтобы собрать и запустить сервис:
+`docker-compose.yml` поднимает локальные контейнеры `bot`, `mongo` и `mongoku`. Чтобы собрать и запустить сервис:
 
 ```bash
 docker compose up --build -d
@@ -48,6 +48,7 @@ docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
 - подключает OpenVPN в отдельном контейнере;
 - запускает бота в его network namespace;
 - оставляет Telegram/webhook-трафик на обычном маршруте сервера через `OPENVPN_IGNORE_REDIRECT_GATEWAY=true`;
+- при старте может зафиксировать корпоративные хосты через `CORP_GITLAB_IP` и `CORP_JIRA_IP`, если Docker не подхватывает DNS, пришедший из VPN;
 - автоматически пытается переподключаться (`resolv-retry infinite`, `connect-retry`, `ping-restart`) и перезапускается через `restart: unless-stopped`.
 
 Логи VPN:
@@ -56,15 +57,21 @@ docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
 docker compose -f docker-compose.yml -f docker-compose.vpn.yml logs -f openvpn
 ```
 
-### Регистрация пользователей
+### Пользователи
 
-- Статический whitelist лежит в `src/data/users.ts`.
-- При первом `/start` бот сверяет username, и если пользователь разрешён, сохраняет `chat_id` в MongoDB (`user_chats` коллекция). Поэтому каждому члену команды нужно один раз открыть бота и выполнить `/start`.
+- Основной источник прав доступа теперь коллекция `users` в MongoDB.
+- Для первичной загрузки можно использовать `users.json` в корне проекта:
+
+```bash
+npm run import:users
+```
+
+- При первом `/start` бот сверяет username, и если пользователь разрешён, сохраняет `chat_id` в MongoDB. Поэтому каждому члену команды нужно один раз открыть бота и выполнить `/start`.
 
 ### MongoDB
 
-- Укажи `MONGODB_URI` и `MONGODB_DB_NAME` в `.env` (Atlas или другая облачная MongoDB).
-- Бот автоматически создаст коллекцию `user_chats` для хранения соответствий `telegram_user_id` → `chat_id`.
+- Укажи `MONGODB_URI` и `MONGODB_DB_NAME` в `.env`.
+- Бот автоматически использует коллекции `users`, `merge_requests`, `review_reminders`, `notification_queue` и связанные служебные данные.
 
 ## GitLab вебхуки
 
