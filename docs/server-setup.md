@@ -81,6 +81,23 @@ BOT_MODE=webhook TELEGRAM_BOT_TOKEN=... npm start
 
 3. После запуска бот выполнит `setWebhook` на `https://mr-bot.example.com/telegram/webhook`, Telegram начнёт слать обновления через Nginx -> порт 3000 -> бот.
 
+### Вариант с корпоративным OpenVPN
+
+Если GitLab/Jira доступны только через корпоративный VPN, положи на сервер:
+
+- `runtime/openvpn/client.ovpn` или другой файл, имя которого указано в `OPENVPN_CONFIG_NAME`;
+- `runtime/openvpn/auth.txt` с логином в первой строке и паролем во второй.
+
+Запуск:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
+```
+
+Эта схема поднимает отдельный контейнер `openvpn`, а контейнер `bot` использует его сетевой namespace. Порт `3000` публикуется на VPN-контейнере, поэтому Nginx на хосте остаётся прежним.
+
+По умолчанию включён split-tunnel: параметр `OPENVPN_IGNORE_REDIRECT_GATEWAY=true` не даёт корпоративному VPN забрать весь дефолтный маршрут сервера. Это важно, чтобы Telegram API и публичный webhook продолжили ходить через обычный интернет сервера, а не через корпоративный периметр.
+
 ## 7. Автостарт (рекомендуется)
 
 Используй systemd/PM2, чтобы бот и туннель поднимались при рестарте сервера. Например, systemd-юнит для бота:

@@ -28,6 +28,34 @@ docker compose up --build -d
 
 Контейнер слушает `3000`, поэтому Nginx на той же машине просто проксирует HTTPS → `http://localhost:3000`.
 
+### OpenVPN для корпоративных ресурсов
+
+Если GitLab/Jira доступны только из корпоративной сети, поднимай бот через дополнительный compose-слой с OpenVPN:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
+```
+
+Что нужно положить на сервер вне git:
+
+- `runtime/openvpn/<имя-конфига>.ovpn`
+- `runtime/openvpn/auth.txt` с двумя строками: логин и пароль
+
+Если `.ovpn` называется не `client.ovpn`, укажи имя в `.env` через `OPENVPN_CONFIG_NAME`.
+
+По умолчанию VPN-обёртка:
+
+- подключает OpenVPN в отдельном контейнере;
+- запускает бота в его network namespace;
+- оставляет Telegram/webhook-трафик на обычном маршруте сервера через `OPENVPN_IGNORE_REDIRECT_GATEWAY=true`;
+- автоматически пытается переподключаться (`resolv-retry infinite`, `connect-retry`, `ping-restart`) и перезапускается через `restart: unless-stopped`.
+
+Логи VPN:
+
+```bash
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml logs -f openvpn
+```
+
 ### Регистрация пользователей
 
 - Статический whitelist лежит в `src/data/users.ts`.
@@ -57,4 +85,3 @@ docker compose up --build -d
    - настроить SSH reverse-туннель с твоего сервера: `ssh -R 443:localhost:3000 user@server`, а на сервере настроить Nginx, который принимает HTTPS и прокидывает в обратный туннель;
    - запустить собственный `ngrokd`/`cloudflared` на сервере и использовать его как точку входа.
 3. После изменения конфигурации перезапусти контейнер бота (например, `docker compose up --build bot`) — при старте бот сам вызывает `setWebhook` на указанный URL.
-
