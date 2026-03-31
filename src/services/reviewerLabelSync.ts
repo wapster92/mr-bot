@@ -9,6 +9,25 @@ import {
   upsertGitlabUserProfile,
 } from '../data/userStore';
 
+type SyncTargetState = {
+  reviewers?: string[];
+  labels?: string[];
+};
+
+const normalizeValues = (values: string[]): string[] =>
+  values.map((value) => value.trim()).filter(Boolean);
+
+const areSameStringSets = (left: string[], right: string[]): boolean => {
+  if (left.length !== right.length) {
+    return false;
+  }
+
+  const normalizedLeft = [...normalizeValues(left)].sort((a, b) => a.localeCompare(b));
+  const normalizedRight = [...normalizeValues(right)].sort((a, b) => a.localeCompare(b));
+
+  return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+};
+
 const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[]> => {
   const labels: string[] = [];
 
@@ -72,22 +91,35 @@ export const syncReviewersAndLabelsToGitlab = async (
   projectId: number,
   iid: number,
   reviewerUsernames: string[],
+  currentState?: SyncTargetState,
 ): Promise<{ ok: boolean; error?: string }> => {
   if (!reviewerUsernames.length) {
     return { ok: false, error: 'empty reviewer list' };
   }
 
+  const normalizedReviewerUsernames = normalizeValues(reviewerUsernames);
   const reviewerIds = await resolveReviewerIds(reviewerUsernames);
   if (!reviewerIds?.length) {
     return { ok: false, error: 'cannot resolve reviewer ids' };
   }
 
   const labels = await buildReviewerLabels(reviewerUsernames);
+  if (
+    currentState &&
+    areSameStringSets(
+      normalizedReviewerUsernames,
+      normalizeValues(currentState.reviewers ?? []),
+    ) &&
+    areSameStringSets(labels, normalizeValues(currentState.labels ?? []))
+  ) {
+    return { ok: true };
+  }
+
   const ok = await updateMergeRequestReviewersAndLabels(projectId, iid, reviewerIds, labels);
 
   if (ok) {
     await updateMergeRequest(projectId, iid, {
-      reviewers: reviewerUsernames,
+      reviewers: normalizedReviewerUsernames,
       reviewersSyncedAt: new Date(),
     });
     return { ok: true };

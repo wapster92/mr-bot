@@ -44,8 +44,12 @@ const syncReviewersToGitlab = async (
   projectId: number,
   iid: number,
   reviewerUsernames: string[],
+  currentState?: {
+    reviewers?: string[];
+    labels?: string[];
+  },
 ): Promise<{ ok: boolean; error?: string }> => {
-  return syncReviewersAndLabelsToGitlab(projectId, iid, reviewerUsernames);
+  return syncReviewersAndLabelsToGitlab(projectId, iid, reviewerUsernames, currentState);
 };
 
 const normalizeOpenMergeRequests = async (): Promise<void> => {
@@ -100,8 +104,12 @@ const normalizeOpenMergeRequests = async (): Promise<void> => {
         reviewersSyncedAt: new Date(),
       });
     }
-    if (updatedReviewers.length) {
-      const syncResult = await syncReviewersToGitlab(mr.projectId, mr.iid, updatedReviewers);
+    if (changed && updatedReviewers.length) {
+      const syncResult = await syncReviewersToGitlab(
+        mr.projectId,
+        mr.iid,
+        updatedReviewers,
+      );
       if (!syncResult.ok) {
         console.warn(
           `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,
@@ -432,7 +440,18 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         }
       }
       if (currentReviewers.length && !isDraft) {
-        const syncResult = await syncReviewersToGitlab(mr.projectId, mr.iid, currentReviewers);
+        const syncResult = await syncReviewersToGitlab(
+          mr.projectId,
+          mr.iid,
+          currentReviewers,
+          {
+            reviewers:
+              apiMergeRequest?.reviewers
+                ?.map((reviewer) => reviewer.username ?? '')
+                .filter(Boolean) ?? [],
+            labels: apiMergeRequest?.labels ?? [],
+          },
+        );
         if (!syncResult.ok) {
           console.warn(
             `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,

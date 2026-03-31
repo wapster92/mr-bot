@@ -272,6 +272,13 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       doc.projectId,
       doc.iid,
       doc.reviewers,
+      {
+        reviewers:
+          apiMergeRequest?.reviewers
+            ?.map((reviewer) => reviewer.username ?? '')
+            .filter(Boolean) ?? [],
+        labels: apiMergeRequest?.labels ?? [],
+      },
     );
     if (!syncResult.ok) {
       console.warn(
