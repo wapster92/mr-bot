@@ -14,6 +14,9 @@ type SyncTargetState = {
   labels?: string[];
 };
 
+const SYNC_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
+const recentSyncAttempts = new Map<string, number>();
+
 const normalizeValues = (values: string[]): string[] =>
   values.map((value) => value.trim()).filter(Boolean);
 
@@ -26,6 +29,36 @@ const areSameStringSets = (left: string[], right: string[]): boolean => {
   const normalizedRight = [...normalizeValues(right)].sort((a, b) => a.localeCompare(b));
 
   return normalizedLeft.every((value, index) => value === normalizedRight[index]);
+};
+
+const buildSyncKey = (
+  projectId: number,
+  iid: number,
+  reviewers: string[],
+  labels: string[],
+): string =>
+  JSON.stringify({
+    projectId,
+    iid,
+    reviewers: [...normalizeValues(reviewers)].sort((a, b) => a.localeCompare(b)),
+    labels: [...normalizeValues(labels)].sort((a, b) => a.localeCompare(b)),
+  });
+
+const shouldSkipRecentAttempt = (key: string): boolean => {
+  const now = Date.now();
+  for (const [entryKey, timestamp] of recentSyncAttempts.entries()) {
+    if (now - timestamp > SYNC_DEDUPE_WINDOW_MS) {
+      recentSyncAttempts.delete(entryKey);
+    }
+  }
+
+  const previousAttemptAt = recentSyncAttempts.get(key);
+  if (previousAttemptAt && now - previousAttemptAt < SYNC_DEDUPE_WINDOW_MS) {
+    return true;
+  }
+
+  recentSyncAttempts.set(key, now);
+  return false;
 };
 
 const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[]> => {
@@ -112,8 +145,23 @@ export const syncReviewersAndLabelsToGitlab = async (
     ) &&
     areSameStringSets(labels, normalizeValues(currentState.labels ?? []))
   ) {
+    console.info(
+      `[reviewer-label-sync] skip unchanged ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
+    );
     return { ok: true };
   }
+
+  const syncKey = buildSyncKey(projectId, iid, normalizedReviewerUsernames, labels);
+  if (shouldSkipRecentAttempt(syncKey)) {
+    console.warn(
+      `[reviewer-label-sync] skip dedupe ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
+    );
+    return { ok: true };
+  }
+
+  console.info(
+    `[reviewer-label-sync] edit ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
+  );
 
   const ok = await updateMergeRequestReviewersAndLabels(projectId, iid, reviewerIds, labels);
 

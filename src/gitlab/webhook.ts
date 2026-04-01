@@ -24,7 +24,12 @@ export const createGitLabWebhookHandler =
 
     const eventType = req.header(GITLAB_EVENT_HEADER) ?? payload?.object_kind ?? 'unknown';
     const projectName = payload?.project?.path_with_namespace ?? 'unknown project';
-    console.log(`[gitlab] event=${eventType} project=${projectName}`);
+    const mrAttrs = payload?.object_attributes ?? {};
+    const mrAction = typeof mrAttrs?.action === 'string' ? mrAttrs.action : undefined;
+    const mrIid = typeof mrAttrs?.iid === 'number' ? mrAttrs.iid : undefined;
+    console.log(
+      `[gitlab] event=${eventType} project=${projectName}${mrAction ? ` action=${mrAction}` : ''}${mrIid !== undefined ? ` iid=${mrIid}` : ''}`,
+    );
 
     if (config.logGitlabEvents) {
       persistGitLabEvent(eventType, payload).catch((error) => {

@@ -17,23 +17,42 @@ const pruneOldEvents = async (): Promise<void> => {
   const stats = await Promise.all(
     files.map(async (file) => {
       const filePath = path.join(EVENTS_DIR, file);
-      const stat = await fs.stat(filePath);
-      return { file, filePath, size: stat.size, mtimeMs: stat.mtimeMs };
+      try {
+        const stat = await fs.stat(filePath);
+        return { file, filePath, size: stat.size, mtimeMs: stat.mtimeMs };
+      } catch (error: any) {
+        if (error?.code === 'ENOENT') {
+          return undefined;
+        }
+        throw error;
+      }
     }),
   );
+  const existingStats = stats.filter(Boolean) as Array<{
+    file: string;
+    filePath: string;
+    size: number;
+    mtimeMs: number;
+  }>;
 
-  let totalSize = stats.reduce((sum, item) => sum + item.size, 0);
+  let totalSize = existingStats.reduce((sum, item) => sum + item.size, 0);
   if (totalSize <= MAX_EVENTS_SIZE_BYTES) {
     return;
   }
 
-  const sorted = stats.sort((a, b) => a.mtimeMs - b.mtimeMs);
+  const sorted = existingStats.sort((a, b) => a.mtimeMs - b.mtimeMs);
   for (const item of sorted) {
     if (totalSize <= MAX_EVENTS_SIZE_BYTES) {
       break;
     }
-    await fs.unlink(item.filePath);
-    totalSize -= item.size;
+    try {
+      await fs.unlink(item.filePath);
+      totalSize -= item.size;
+    } catch (error: any) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+    }
   }
 };
 
