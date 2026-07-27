@@ -15,7 +15,11 @@ import {
 import { persistGitlabUserProfiles } from '../gitlab/handlers/common';
 import { deliverHtmlMessageToRecipients, deliverHtmlMessage } from '../messages/send';
 import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../messages/templates';
-import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/recipients';
+import {
+  filterRecipientsWithoutApproval,
+  getLeadRecipients,
+  getRecipientByGitlabUsername,
+} from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
 import { listLeadUsers } from '../data/userStore';
@@ -135,7 +139,11 @@ const maybeNotifyApprovals = async (
       url: mr.url ?? '—',
       taskUrl: mr.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+    const recipients = filterRecipientsWithoutApproval(
+      await getLeadRecipients(),
+      uniqueApprovers,
+    );
+    await deliverHtmlMessageToRecipients(bot, recipients, message, {
       eventType: 'mr_final_review',
       projectId: mr.projectId,
       mrIid: mr.iid,

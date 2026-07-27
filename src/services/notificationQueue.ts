@@ -1,5 +1,6 @@
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
+import { findMergeRequest } from '../data/mergeRequestRepository';
 import {
   claimNotification,
   listQueuedNotifications,
@@ -8,10 +9,37 @@ import {
   markNotificationError,
 } from '../data/notificationQueueRepository';
 import { getUserByGitlabUsername, getUserByTelegramUsername } from '../data/userStore';
-import { isWithinWorkingHours } from '../messages/recipients';
+import {
+  hasGitlabUserApproved,
+  isWithinWorkingHours,
+} from '../messages/recipients';
 import { sendHtmlMessage } from '../messages/send';
 
 let flushInProgress = false;
+
+const recipientAlreadyApprovedFinalReview = async (
+  item: {
+    eventType?: string;
+    mrKey?: string;
+    gitlabUsername?: string;
+  },
+): Promise<boolean> => {
+  if (
+    item.eventType !== 'mr_final_review' ||
+    !item.mrKey ||
+    !item.gitlabUsername
+  ) {
+    return false;
+  }
+  const [projectIdText, iidText] = item.mrKey.split(':');
+  const projectId = Number(projectIdText);
+  const iid = Number(iidText);
+  if (!Number.isInteger(projectId) || !Number.isInteger(iid)) {
+    return false;
+  }
+  const mr = await findMergeRequest(projectId, iid);
+  return hasGitlabUserApproved(mr?.approvedBy ?? [], item.gitlabUsername);
+};
 
 export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise<void> => {
   if (flushInProgress) {
@@ -38,6 +66,17 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
           await markNotificationCancelled(
             item._id,
             'Пользователь удалён, отключён или ему запрещён доступ',
+            now,
+          );
+        }
+        continue;
+      }
+
+      if (await recipientAlreadyApprovedFinalReview(item)) {
+        if (item._id) {
+          await markNotificationCancelled(
+            item._id,
+            'Лид уже поставил approve этому MR',
             now,
           );
         }

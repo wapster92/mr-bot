@@ -14,7 +14,11 @@ import {
   buildMergeRequestCreatedMessage,
 } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
-import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
+import {
+  filterRecipientsWithoutApproval,
+  getLeadRecipients,
+  getRecipientByGitlabUsername,
+} from '../../messages/recipients';
 import { persistGitlabUserProfileFromPayload, persistGitlabUserProfiles } from './common';
 import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import type { Telegraf } from 'telegraf';
@@ -442,7 +446,11 @@ const handleMergeRequestEventUnlocked = async (
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+    const recipients = filterRecipientsWithoutApproval(
+      await getLeadRecipients(),
+      uniqueApprovers,
+    );
+    await deliverHtmlMessageToRecipients(bot, recipients, message, {
       eventType: 'mr_final_review',
       projectId: doc.projectId,
       mrIid: doc.iid,

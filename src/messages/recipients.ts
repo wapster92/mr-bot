@@ -11,6 +11,26 @@ export type DeliveryRecipient = {
   isWithinHours: boolean;
 };
 
+export const hasGitlabUserApproved = (
+  approvedBy: string[],
+  gitlabUsername?: string,
+): boolean =>
+  Boolean(
+    gitlabUsername &&
+      approvedBy.some(
+        (username) => username.toLowerCase() === gitlabUsername.toLowerCase(),
+      ),
+  );
+
+export const filterRecipientsWithoutApproval = (
+  recipients: DeliveryRecipient[],
+  approvedBy: string[],
+): DeliveryRecipient[] => {
+  return recipients.filter(
+    (recipient) => !hasGitlabUserApproved(approvedBy, recipient.gitlabUsername),
+  );
+};
+
 const toRecipient = async (
   user: UserRecord,
   now: Date,
