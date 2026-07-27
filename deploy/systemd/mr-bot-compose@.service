@@ -1,0 +1,22 @@
+[Unit]
+Description=MR Bot Docker Compose stack (%i)
+Requires=docker.service
+After=docker.service network-online.target
+Wants=network-online.target
+PartOf=docker.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+User=%i
+WorkingDirectory=/home/%i/mr-bot
+ExecStartPre=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.vpn.yml config --quiet
+ExecStart=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.vpn.yml up -d --remove-orphans
+ExecStop=/usr/bin/docker compose -f docker-compose.yml -f docker-compose.vpn.yml stop
+Restart=on-failure
+RestartSec=15
+TimeoutStartSec=0
+TimeoutStopSec=120
+
+[Install]
+WantedBy=multi-user.target

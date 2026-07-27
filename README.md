@@ -57,6 +57,10 @@ docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
 docker compose -f docker-compose.yml -f docker-compose.vpn.yml logs -f openvpn
 ```
 
+На production-сервере настрой systemd-автостарт всего Compose-стека по
+[инструкции](docs/server-setup.md#7-автостарт-compose-стека). Это гарантирует повторное
+применение Compose-зависимостей после перезагрузки хоста или Docker.
+
 ### Пользователи
 
 - Основной источник прав доступа теперь коллекция `users` в MongoDB.

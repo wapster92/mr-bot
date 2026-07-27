@@ -62,6 +62,14 @@ Certbot:
 - добавит `ssl_certificate`/`ssl_certificate_key` в конфиг;
 - настроит автоматическое продление (`sudo systemctl list-timers | grep certbot`).
 
+Установи deploy-hook, чтобы Nginx автоматически подхватывал новый сертификат
+после успешного продления:
+
+```bash
+sudo install -m 0755 deploy/certbot/reload-nginx.sh \
+  /etc/letsencrypt/renewal-hooks/deploy/reload-nginx
+```
+
 Проверить можно командой:
 
 ```bash
@@ -98,27 +106,32 @@ docker compose -f docker-compose.yml -f docker-compose.vpn.yml up --build -d
 
 По умолчанию включён split-tunnel: параметр `OPENVPN_IGNORE_REDIRECT_GATEWAY=true` не даёт корпоративному VPN забрать весь дефолтный маршрут сервера. Это важно, чтобы Telegram API и публичный webhook продолжили ходить через обычный интернет сервера, а не через корпоративный периметр.
 
-## 7. Автостарт (рекомендуется)
+## 7. Автостарт Compose-стека
 
-Используй systemd/PM2, чтобы бот и туннель поднимались при рестарте сервера. Например, systemd-юнит для бота:
+Для VPN-схемы недостаточно только `restart: unless-stopped`. При
+запуске Docker после перезагрузки сервера порядок `depends_on` не учитывается:
+`bot` может попытаться подключиться к network namespace ещё не запущенного
+`openvpn` и остаться остановленным.
 
-```ini
-[Unit]
-Description=mr-bot
-After=network.target
-
-[Service]
-WorkingDirectory=/opt/mr-bot
-EnvironmentFile=/opt/mr-bot/.env
-ExecStart=/usr/bin/node dist/index.js
-Restart=always
-
-[Install]
-WantedBy=multi-user.target
-```
-
-Активируй:
+В репозитории есть systemd-template, который после запуска Docker повторно
+применяет Compose-конфигурацию и поднимает весь стек в правильном порядке.
+Шаблон ожидает, что репозиторий находится в `~/mr-bot` у пользователя, имя
+которого указано после `@`:
 
 ```bash
-sudo systemctl enable --now mr-bot
+sudo install -m 0644 deploy/systemd/mr-bot-compose@.service \
+  /etc/systemd/system/mr-bot-compose@.service
+sudo systemctl daemon-reload
+sudo systemctl enable --now "mr-bot-compose@$(id -un).service"
 ```
+
+Проверка:
+
+```bash
+systemctl status "mr-bot-compose@$(id -un).service"
+docker compose -f docker-compose.yml -f docker-compose.vpn.yml ps
+```
+
+Юнит также перезапускает Compose-стек при `systemctl restart docker`.
+Если репозиторий лежит не в `~/mr-bot`, переопредели `WorkingDirectory` через
+`systemctl edit`.
