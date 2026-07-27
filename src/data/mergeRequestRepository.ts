@@ -33,6 +33,11 @@ export type MergeRequestDocument = {
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
   authorMergeNotified?: boolean;
+  gameStartedAt?: Date;
+  gameLintFailed?: boolean;
+  gameLintFirstPassEvaluated?: boolean;
+  gameReadyAt?: Date;
+  gameMergeOverdueAt?: Date;
   reviewersSyncedAt?: Date;
   reviewersSyncFailedAt?: Date;
   reviewersSyncError?: string;
@@ -76,6 +81,62 @@ export const updateMergeRequest = async (
 ): Promise<void> => {
   const collection = await getCollection();
   await collection.updateOne({ projectId, iid }, { $set: update });
+};
+
+export const startMergeRequestGameReady = async (
+  projectId: number,
+  iid: number,
+  readyAt = new Date(),
+): Promise<boolean> => {
+  const collection = await getCollection();
+  const result = await collection.updateOne(
+    {
+      projectId,
+      iid,
+      gameReadyAt: { $exists: false },
+    },
+    { $set: { gameReadyAt: readyAt } },
+  );
+  return result.modifiedCount === 1;
+};
+
+export const clearMergeRequestGameReady = async (
+  projectId: number,
+  iid: number,
+): Promise<void> => {
+  const collection = await getCollection();
+  await collection.updateOne(
+    { projectId, iid, gameReadyAt: { $exists: true } },
+    { $unset: { gameReadyAt: '' } },
+  );
+};
+
+export const markMergeRequestGameOverdue = async (
+  projectId: number,
+  iid: number,
+  overdueAt = new Date(),
+): Promise<void> => {
+  const collection = await getCollection();
+  await collection.updateOne(
+    { projectId, iid },
+    { $set: { gameMergeOverdueAt: overdueAt } },
+  );
+};
+
+export const listMergeRequestsReadyForGamePenalty = async (
+  limit = 200,
+): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({
+      gameReadyAt: { $type: 'date' },
+      gameMergeOverdueAt: { $exists: false },
+      isDraft: { $ne: true },
+      $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }],
+    })
+    .sort({ gameReadyAt: 1 })
+    .limit(limit)
+    .toArray();
 };
 
 export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestDocument[]> => {

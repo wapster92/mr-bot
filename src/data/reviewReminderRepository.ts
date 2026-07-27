@@ -13,6 +13,7 @@ export type ReviewReminderDocument = {
   escalatedAt?: Date;
   inactiveAt?: Date;
   processingAt?: Date;
+  gameStartedAt?: Date;
 };
 
 const COLLECTION_NAME = 'review_reminders';
@@ -51,6 +52,38 @@ export const listReviewRemindersForMr = async (
   return collection.find({ projectId, iid }).toArray();
 };
 
+export const findReviewReminderForReviewer = async (
+  projectId: number,
+  iid: number,
+  reviewerUsername: string,
+): Promise<ReviewReminderDocument | null> => {
+  const collection = await getCollection();
+  return collection.findOne({
+    projectId,
+    iid,
+    reviewerUsernameLower: reviewerUsername.toLowerCase(),
+  });
+};
+
+export const ensureReviewReminderGameStarted = async (
+  projectId: number,
+  iid: number,
+  reviewerUsername: string,
+  startedAt = new Date(),
+): Promise<ReviewReminderDocument | null> => {
+  const collection = await getCollection();
+  const filter = {
+    projectId,
+    iid,
+    reviewerUsernameLower: reviewerUsername.toLowerCase(),
+  };
+  await collection.updateOne(
+    { ...filter, gameStartedAt: { $exists: false } },
+    { $set: { gameStartedAt: startedAt } },
+  );
+  return collection.findOne(filter);
+};
+
 export const upsertReviewReminder = async (input: {
   projectId: number;
   iid: number;
@@ -77,6 +110,15 @@ export const upsertReviewReminder = async (input: {
     },
     { upsert: true },
   );
+  await collection.updateOne(
+    {
+      projectId: input.projectId,
+      iid: input.iid,
+      reviewerUsernameLower: input.reviewerUsername.toLowerCase(),
+      gameStartedAt: { $exists: false },
+    },
+    { $set: { gameStartedAt: input.assignedAt } },
+  );
 };
 
 export const resetReviewReminder = async (input: {
@@ -96,6 +138,7 @@ export const resetReviewReminder = async (input: {
       $set: {
         assignedAt: input.assignedAt,
         reminderCount: 0,
+        gameStartedAt: input.assignedAt,
       },
       $unset: {
         lastReminderAt: '',

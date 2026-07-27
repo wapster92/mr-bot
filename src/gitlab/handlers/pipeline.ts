@@ -4,12 +4,22 @@ import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import {
   buildLintFailedMessage,
-  buildLintPassedLeadMessage,
   buildLintPassedMessage,
 } from '../../messages/templates';
-import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
-import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
+import { deliverHtmlMessage } from '../../messages/send';
+import { getRecipientByGitlabUsername } from '../../messages/recipients';
 import { fetchPipelineJobs } from '../api';
+import { recordLintFirstPassScore, runGameAction } from '../../services/gameScoring';
+import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
+import { withMergeRequestLock } from '../../services/mergeRequestLock';
+
+const parseDate = (value?: string): Date => {
+  if (!value) {
+    return new Date();
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+};
 
 const isLintPipeline = (payload: any): boolean => {
   const attrs = payload.object_attributes ?? {};
@@ -31,7 +41,10 @@ const getMergeRequestInfo = (payload: any): { projectId?: number; iid?: number }
   };
 };
 
-export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+const handlePipelineEventUnlocked = async (
+  payload: any,
+  bot: Telegraf<BotContext>,
+): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
   const attrs = payload.object_attributes ?? {};
   if (attrs.source !== 'merge_request_event') {
@@ -74,15 +87,33 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       ? `${pipelineId}:${String(lintStatus)}`
       : undefined;
 
-  await updateMergeRequest(projectId, iid, { lastLintStatus: lintStatus });
-
   const doc = await findMergeRequest(projectId, iid);
   if (!doc) {
     console.warn(`[pipeline] Merge request ${projectId}/${iid} not found`);
     return;
   }
+  const occurredAt = parseDate(attrs.finished_at ?? attrs.updated_at);
+  const terminalLint = ['failed', 'canceled', 'success'].includes(lintStatus);
+  const lintUpdate: Parameters<typeof updateMergeRequest>[2] = {
+    lastLintStatus: lintStatus,
+  };
+  if (terminalLint && doc.gameStartedAt && !doc.gameLintFirstPassEvaluated) {
+    if (lintStatus === 'success' && !doc.gameLintFailed) {
+      await runGameAction(`first lint ${projectId}/${iid}`, () =>
+        recordLintFirstPassScore(doc, occurredAt),
+      );
+    }
+    lintUpdate.gameLintFirstPassEvaluated = true;
+  }
+  if (lintStatus === 'failed' || lintStatus === 'canceled') {
+    lintUpdate.gameLintFailed = true;
+  }
+  await updateMergeRequest(projectId, iid, lintUpdate);
+  await runGameAction(`readiness after lint ${projectId}/${iid}`, async () => {
+    await syncMergeRequestGameReadiness(projectId, iid, occurredAt);
+  });
 
-  let reviewers = doc.reviewers ?? [];
+  const reviewers = doc.reviewers ?? [];
 
   if (lintStatus === 'failed' || lintStatus === 'canceled') {
     const authorUsername = doc.author.gitlabUsername;
@@ -139,4 +170,18 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       ...(dedupeId ? { dedupeId } : {}),
     });
   }
+};
+
+export const handlePipelineEvent = async (
+  payload: any,
+  bot: Telegraf<BotContext>,
+): Promise<void> => {
+  const { projectId, iid } = getMergeRequestInfo(payload);
+  if (!projectId || !iid) {
+    await handlePipelineEventUnlocked(payload, bot);
+    return;
+  }
+  await withMergeRequestLock(projectId, iid, () =>
+    handlePipelineEventUnlocked(payload, bot),
+  );
 };

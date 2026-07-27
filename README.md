@@ -112,7 +112,13 @@ npm run import:users
 ### MongoDB
 
 - Укажи `MONGODB_URI` и `MONGODB_DB_NAME` в `.env`.
-- Бот автоматически использует коллекции `users`, `merge_requests`, `review_reminders`, `notification_queue` и связанные служебные данные.
+- Бот автоматически использует коллекции `users`, `merge_requests`, `review_reminders`, `notification_queue`, `score_events` и связанные служебные данные.
+
+### Игровая система
+
+Правила XP, сезонного топа, штрафов и защиты от повторных начислений зафиксированы
+в [документации игровой системы](docs/gamification.md). Новый сезон начинается
+первого числа в `00:00` по Москве, общий XP и уровень пользователя не обнуляются.
 
 ## GitLab вебхуки
 

@@ -10,14 +10,13 @@ import {
   releaseReviewReminderClaim,
 } from '../data/reviewReminderRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
-import type { UserRecord } from '../data/userTypes';
 import { formatGitlabUserLabel } from '../messages/format';
 import { getLeadRecipients, isWithinWorkingHours, getRecipientByGitlabUsername } from '../messages/recipients';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../messages/send';
 import { buildReviewEscalationMessage, buildReviewReminderMessage } from '../messages/templates';
-import { getWorkdayMinutes } from './workingHours';
+import { addWorkingMinutes, getWorkdayMinutes } from './workingHours';
+import { recordReviewOverdueScore } from './gameScoring';
 
-const REMINDER_STEP_MINUTES = 15;
 const REMINDER_INTERVAL_MINUTES = 180;
 const ESCALATION_DAYS = 2;
 const SCHEDULER_INTERVAL_MS = 15 * 60 * 1000;
@@ -25,26 +24,6 @@ let schedulerRunning = false;
 
 const isDraftTitle = (title?: string): boolean =>
   /^draft[: ]/i.test((title ?? '').trim());
-
-const addWorkingMinutes = (user: UserRecord, from: Date, minutes: number): Date => {
-  if (minutes <= 0) {
-    return from;
-  }
-  let remaining = minutes;
-  let cursor = new Date(from.getTime());
-  let guard = 0;
-  const stepMs = REMINDER_STEP_MINUTES * 60 * 1000;
-
-  while (remaining > 0 && guard < 10000) {
-    cursor = new Date(cursor.getTime() + stepMs);
-    if (isWithinWorkingHours(user, cursor)) {
-      remaining -= REMINDER_STEP_MINUTES;
-    }
-    guard += 1;
-  }
-
-  return cursor;
-};
 
 const getReminderLevel = (reminderCount: number): 1 | 2 | 3 => {
   if (reminderCount <= 0) return 1;
@@ -85,9 +64,13 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
         }
 
         const workdayMinutes = getWorkdayMinutes(reviewer);
+        const trackingStartedAt =
+          reminder.gameStartedAt && reminder.gameStartedAt > reminder.assignedAt
+            ? reminder.gameStartedAt
+            : reminder.assignedAt;
         const escalationAt = addWorkingMinutes(
           reviewer,
-          reminder.assignedAt,
+          trackingStartedAt,
           workdayMinutes * ESCALATION_DAYS,
         );
 
@@ -121,6 +104,7 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
               `${reminder.reviewerUsername}:` +
               `${reminder.assignedAt.toISOString()}:escalation`,
           });
+          await recordReviewOverdueScore(reminder, escalationAt);
           await markEscalated(
             reminder.projectId,
             reminder.iid,

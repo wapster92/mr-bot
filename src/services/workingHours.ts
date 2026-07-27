@@ -89,3 +89,70 @@ export const isWithinWorkingHours = (user: UserRecord, now: Date): boolean => {
   }
   return localDateTime.minutes >= startMinutes || localDateTime.minutes < endMinutes;
 };
+
+const WORKING_TIME_STEP_MINUTES = 15;
+const MAX_WORKING_TIME_STEPS = 200_000;
+
+export const addWorkingMinutes = (
+  user: UserRecord,
+  from: Date,
+  minutes: number,
+): Date => {
+  if (minutes <= 0) {
+    return new Date(from.getTime());
+  }
+
+  let remaining = minutes;
+  let cursor = new Date(from.getTime());
+  let steps = 0;
+
+  while (remaining > 0 && steps < MAX_WORKING_TIME_STEPS) {
+    const stepMinutes = Math.min(WORKING_TIME_STEP_MINUTES, remaining);
+    const next = new Date(cursor.getTime() + stepMinutes * 60 * 1000);
+    const midpoint = new Date((cursor.getTime() + next.getTime()) / 2);
+    if (isWithinWorkingHours(user, midpoint)) {
+      remaining -= stepMinutes;
+    }
+    cursor = next;
+    steps += 1;
+  }
+
+  if (remaining > 0) {
+    throw new Error('Unable to calculate working-time deadline');
+  }
+  return cursor;
+};
+
+export const getWorkingMinutesBetween = (
+  user: UserRecord,
+  from: Date,
+  to: Date,
+): number => {
+  if (to <= from) {
+    return 0;
+  }
+
+  let minutes = 0;
+  let cursor = new Date(from.getTime());
+  let steps = 0;
+
+  while (cursor < to && steps < MAX_WORKING_TIME_STEPS) {
+    const next = new Date(
+      Math.min(
+        cursor.getTime() + WORKING_TIME_STEP_MINUTES * 60 * 1000,
+        to.getTime(),
+      ),
+    );
+    const midpoint = new Date((cursor.getTime() + next.getTime()) / 2);
+    if (isWithinWorkingHours(user, midpoint)) {
+      minutes += (next.getTime() - cursor.getTime()) / (60 * 1000);
+    }
+    cursor = next;
+    steps += 1;
+  }
+
+  if (cursor < to) {
+    throw new Error('Unable to calculate elapsed working time');
+  }
+  return Math.round(minutes);
+};

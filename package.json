@@ -5,6 +5,7 @@
   "scripts": {
     "dev": "ts-node-dev --respawn --transpile-only src/index.ts",
     "build": "tsc -p tsconfig.json",
+    "test": "TELEGRAM_BOT_TOKEN=test MONGODB_URI=mongodb://localhost:27017/test MONGODB_DB_NAME=test node --test -r ts-node/register/transpile-only tests/*.spec.ts",
     "start": "node dist/index.js",
     "import:users": "node scripts/import-users.cjs"
   },

@@ -16,6 +16,7 @@ import { commandAuthMiddleware } from './middleware/auth';
 import { buildMergeRequestMessages } from './services/mrSummary';
 import { flushNotificationQueue } from './services/notificationQueue';
 import { listErroredNotifications } from './data/notificationQueueRepository';
+import { buildGameProfileMessage, buildGameTopMessage } from './services/gameStats';
 
 export type BotContext = Context;
 
@@ -23,6 +24,7 @@ const buildMainKeyboard = (isLead: boolean): ReturnType<typeof Markup.keyboard> 
   const rows: string[][] = isLead
     ? [['Мои MR', 'Все MR'], ['Финал']]
     : [['На ревью', 'Мои MR'], ['Все MR']];
+  rows.push(['Мой профиль', 'Топ']);
   rows.push(['Помощь']);
   return Markup.keyboard(rows).resize();
 };
@@ -40,6 +42,10 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
   commandLines.push(
     '/my_mrs — показать активные MR, где ты автор',
     '/mrs — показать активные MR и их статус',
+    '/profile — показать игровой профиль и XP',
+    '/top — показать общий сезонный топ',
+    '/top_review — показать топ ревьюеров',
+    '/top_author — показать топ авторов',
   );
   if (user?.isLead) {
     commandLines.push(
@@ -236,6 +242,40 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.command('my_mrs', handleMyMrs);
 
+  const handleGameProfile = async (ctx: BotContext): Promise<void> => {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user || user.isActive === false) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+    const message = await buildGameProfileMessage(user.gitlabUsername);
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    });
+  };
+
+  const handleGameTop = async (
+    ctx: BotContext,
+    category?: 'review' | 'author',
+  ): Promise<void> => {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user || user.isActive === false) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+    const message = await buildGameTopMessage(category);
+    await ctx.reply(message, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+    });
+  };
+
+  bot.command('profile', handleGameProfile);
+  bot.command('top', (ctx) => handleGameTop(ctx));
+  bot.command('top_review', (ctx) => handleGameTop(ctx, 'review'));
+  bot.command('top_author', (ctx) => handleGameTop(ctx, 'author'));
+
   const handleFinal = async (ctx: BotContext): Promise<void> => {
     const actor = await getUserByTelegramUsername(ctx.from?.username);
     if (!actor?.isLead) {
@@ -282,6 +322,8 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.hears('На ревью', handleReview);
   bot.hears('Мои MR', handleMyMrs);
   bot.hears('Все MR', handleMrs);
+  bot.hears('Мой профиль', handleGameProfile);
+  bot.hears('Топ', (ctx) => handleGameTop(ctx));
   bot.hears('Финал', handleFinal);
   bot.hears('Помощь', helpCommand);
 

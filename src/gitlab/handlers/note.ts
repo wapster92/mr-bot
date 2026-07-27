@@ -6,6 +6,15 @@ import { buildMergeRequestCommentMessage } from '../../messages/templates';
 import { deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
+import { recordReviewCommentScore, runGameAction } from '../../services/gameScoring';
+
+const parseDate = (value?: string): Date => {
+  if (!value) {
+    return new Date();
+  }
+  const date = new Date(value);
+  return Number.isNaN(date.getTime()) ? new Date() : date;
+};
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
@@ -33,7 +42,36 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
   if (commenter && commenter.toLowerCase() === authorGitlab.toLowerCase()) {
     return;
   }
-  if (commenter && doc.reviewers?.some((reviewer) => reviewer.toLowerCase() === commenter.toLowerCase())) {
+  const isAssignedReviewer = Boolean(
+    commenter &&
+      doc.reviewers?.some(
+        (reviewer) => reviewer.toLowerCase() === commenter.toLowerCase(),
+      ),
+  );
+  const noteAttributes = payload.object_attributes ?? {};
+  const noteId = noteAttributes.id;
+  const discussionKey = noteAttributes.discussion_id ?? noteId;
+  const isNewHumanComment =
+    !noteAttributes.system &&
+    (!noteAttributes.action || noteAttributes.action === 'create');
+  if (
+    commenter &&
+    isAssignedReviewer &&
+    isNewHumanComment &&
+    noteId !== undefined &&
+    discussionKey !== undefined
+  ) {
+    await runGameAction(`review comment ${doc.projectId}/${doc.iid}`, () =>
+      recordReviewCommentScore({
+        mr: doc,
+        reviewerUsername: commenter,
+        noteId: String(noteId),
+        discussionKey: String(discussionKey),
+        occurredAt: parseDate(noteAttributes.created_at),
+      }),
+    );
+  }
+  if (commenter && isAssignedReviewer) {
     await markReviewCompletedForReviewer(
       { projectId: doc.projectId, iid: doc.iid },
       commenter,
@@ -46,9 +84,8 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     return;
   }
 
-  const noteText = payload.object_attributes?.note ?? '';
+  const noteText = noteAttributes.note ?? '';
   const commenterName = payload.user?.name ?? commenter ?? 'Ревьюер';
-  const noteId = payload.object_attributes?.id;
 
   const message = buildMergeRequestCommentMessage({
     title: doc.title ?? '—',

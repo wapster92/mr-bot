@@ -22,6 +22,8 @@ import { listLeadUsers } from '../data/userStore';
 import { markReviewCompletedForApprovers, syncReviewRemindersForMr } from './reviewReminderService';
 import { reconcileReviewersForMr } from './reviewerAssignment';
 import { withMergeRequestLock } from './mergeRequestLock';
+import { runGameAction } from './gameScoring';
+import { syncMergeRequestGameReadiness } from './mergeReadiness';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -417,6 +419,9 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
           authorMergeNotified: mr.authorMergeNotified,
         },
       );
+      await runGameAction(`periodic readiness ${mr.projectId}/${mr.iid}`, async () => {
+        await syncMergeRequestGameReadiness(mr.projectId, mr.iid, new Date());
+      });
     }
   } catch (error) {
     console.warn('[sync] Failed to sync open merge requests', error);

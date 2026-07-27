@@ -3,6 +3,7 @@ import {
   type MergeRequestDocument,
   findMergeRequest,
   updateMergeRequest,
+  clearMergeRequestGameReady,
 } from '../../data/mergeRequestRepository';
 import { getUserByGitlabUsername, listLeadUsers } from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
@@ -26,6 +27,13 @@ import {
 } from '../../services/reviewReminderService';
 import { reconcileReviewersForMr } from '../../services/reviewerAssignment';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
+import {
+  recordMergedMrScore,
+  recordReviewApprovalScore,
+  recordReviewUnapprovalScore,
+  runGameAction,
+} from '../../services/gameScoring';
+import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -243,6 +251,10 @@ const handleMergeRequestEventUnlocked = async (
   if (updatedAt) {
     doc.updatedAt = updatedAt;
   }
+  const actionedAt = parseDate(attrs.actioned_at) ?? updatedAt;
+  if (attrs.action === 'open' && !existingDoc?.gameStartedAt) {
+    doc.gameStartedAt = createdAt ?? updatedAt ?? new Date();
+  }
 
   if (attrs.action === 'open' || attrs.action === 'update') {
     const reviewerState = await reconcileReviewersForMr(
@@ -301,20 +313,76 @@ const handleMergeRequestEventUnlocked = async (
     });
   }
 
+  // GitLab uses approval/unapproval for individual actions and can additionally
+  // report approved/unapproved when the MR-wide approval state changes.
+  const isApprovalAction =
+    attrs.action === 'approval' || attrs.action === 'approved';
+  const isUnapprovalAction =
+    attrs.action === 'unapproval' || attrs.action === 'unapproved';
+  const isSystemApprovalReset = isUnapprovalAction && attrs.system === true;
   let nextApprovers: string[] | undefined;
-  if (!apiApprovals && (attrs.action === 'approved' || attrs.action === 'unapproved')) {
-    const actorUsername = payload.user?.username;
-    if (actorUsername) {
+  const actorUsername = payload.user?.username;
+  if (isApprovalAction || isUnapprovalAction) {
+    if (!apiApprovals && actorUsername && !isSystemApprovalReset) {
       const currentApprovers = existingDoc?.approvedBy ?? [];
       nextApprovers =
-        attrs.action === 'approved'
+        isApprovalAction
           ? Array.from(new Set([...currentApprovers, actorUsername]))
           : currentApprovers.filter((username) => username !== actorUsername);
       await updateMergeRequest(doc.projectId, doc.iid, { approvedBy: nextApprovers });
     }
+    const scoreApprovers = doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy;
+    const scoreMr: MergeRequestDocument = {
+      ...existingDoc,
+      ...doc,
+      ...(scoreApprovers ? { approvedBy: scoreApprovers } : {}),
+    };
+    await runGameAction(`approval ${doc.projectId}/${doc.iid}`, async () => {
+      if (isApprovalAction && actorUsername) {
+        await recordReviewApprovalScore({
+          mr: scoreMr,
+          username: actorUsername,
+          occurredAt: actionedAt ?? new Date(),
+        });
+        return;
+      }
+      if (isUnapprovalAction && actorUsername && !isSystemApprovalReset) {
+        await recordReviewUnapprovalScore({
+          mr: scoreMr,
+          username: actorUsername,
+          occurredAt: actionedAt ?? new Date(),
+        });
+        return;
+      }
+      if (isSystemApprovalReset && apiApprovals) {
+        const currentApprovers = new Set(
+          (doc.approvedBy ?? []).map((username) => username.toLowerCase()),
+        );
+        const removedApprovers = (existingDoc?.approvedBy ?? []).filter(
+          (username) => !currentApprovers.has(username.toLowerCase()),
+        );
+        for (const username of removedApprovers) {
+          await recordReviewUnapprovalScore({
+            mr: scoreMr,
+            username,
+            occurredAt: actionedAt ?? new Date(),
+          });
+        }
+      }
+    });
   }
 
   if (attrs.action === 'close' || attrs.action === 'merge') {
+    if (attrs.action === 'merge') {
+      const scoreMr: MergeRequestDocument = { ...existingDoc, ...doc };
+      await runGameAction(`merge ${doc.projectId}/${doc.iid}`, () =>
+        recordMergedMrScore(
+          scoreMr,
+          parseDate(attrs.merged_at) ?? actionedAt ?? new Date(),
+        ),
+      );
+    }
+    await clearMergeRequestGameReady(doc.projectId, doc.iid);
     const closerName = await formatGitlabUserLabel(payload.user?.username, payload.user?.name);
     const originalAuthorName = await formatGitlabUserLabel(
       doc.author.gitlabUsername,
@@ -404,6 +472,14 @@ const handleMergeRequestEventUnlocked = async (
       await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
     }
   }
+
+  await runGameAction(`readiness ${doc.projectId}/${doc.iid}`, async () => {
+    await syncMergeRequestGameReadiness(
+      doc.projectId,
+      doc.iid,
+      updatedAt ?? new Date(),
+    );
+  });
 };
 
 export const handleMergeRequestEvent = async (
