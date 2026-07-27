@@ -34,6 +34,12 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
     return;
   }
 
+  const commitSha = payload.after ?? payload.checkout_sha;
+  const dedupeId =
+    typeof commitSha === 'string' && commitSha
+      ? `${branch}:${commitSha}`
+      : undefined;
+
   for (const reviewer of doc.reviewers) {
     const reviewerRecipient = await getRecipientByGitlabUsername(reviewer);
     if (!reviewerRecipient) {
@@ -49,6 +55,7 @@ export const handlePushEvent = async (payload: any, bot: Telegraf<BotContext>): 
       eventType: 'mr_push',
       projectId: doc.projectId,
       mrIid: doc.iid,
+      ...(dedupeId ? { dedupeId } : {}),
     });
   }
 };

@@ -3,7 +3,7 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildMergeRequestCommentMessage } from '../../messages/templates';
-import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
+import { deliverHtmlMessageToRecipients } from '../../messages/send';
 import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
 import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
 
@@ -57,13 +57,8 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     commenterName,
     noteText,
   });
-  await deliverHtmlMessage(bot, authorRecipient, message, {
-    eventType: 'mr_comment',
-    projectId: doc.projectId,
-    mrIid: doc.iid,
-    ...(noteId ? { dedupeId: String(noteId) } : {}),
-  });
-  await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
+  const recipients = [authorRecipient, ...(await getLeadRecipients())];
+  await deliverHtmlMessageToRecipients(bot, recipients, message, {
     eventType: 'mr_comment',
     projectId: doc.projectId,
     mrIid: doc.iid,

@@ -69,6 +69,10 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       }
     }
   }
+  const dedupeId =
+    typeof pipelineId === 'number' || typeof pipelineId === 'string'
+      ? `${pipelineId}:${String(lintStatus)}`
+      : undefined;
 
   await updateMergeRequest(projectId, iid, { lastLintStatus: lintStatus });
 
@@ -102,6 +106,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       eventType: 'lint_failed',
       projectId,
       mrIid: iid,
+      ...(dedupeId ? { dedupeId } : {}),
     });
     return;
   }
@@ -131,6 +136,7 @@ export const handlePipelineEvent = async (payload: any, bot: Telegraf<BotContext
       eventType: 'lint_passed_author',
       projectId,
       mrIid: iid,
+      ...(dedupeId ? { dedupeId } : {}),
     });
   }
 };

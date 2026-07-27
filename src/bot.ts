@@ -6,7 +6,11 @@ import {
   persistUserChatId,
   upsertAllowedUser,
 } from './data/userStore';
-import { listActiveMergeRequests, listPendingReviewsForReviewer } from './data/mergeRequestRepository';
+import {
+  listActiveMergeRequests,
+  listActiveMergeRequestsByAuthor,
+  listPendingReviewsForReviewer,
+} from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
 import { buildMergeRequestMessages } from './services/mrSummary';
@@ -16,26 +20,35 @@ import { listErroredNotifications } from './data/notificationQueueRepository';
 export type BotContext = Context;
 
 const buildMainKeyboard = (isLead: boolean): ReturnType<typeof Markup.keyboard> => {
-  const rows: string[][] = [['На ревью', 'Все MR']];
-  if (isLead) {
-    rows.push(['Финал']);
-  }
+  const rows: string[][] = isLead
+    ? [['Мои MR', 'Все MR'], ['Финал']]
+    : [['На ревью', 'Мои MR'], ['Все MR']];
   rows.push(['Помощь']);
   return Markup.keyboard(rows).resize();
 };
 
 const helpCommand = async (ctx: BotContext): Promise<any> => {
   const user = await getUserByTelegramUsername(ctx.from?.username);
+  const commandLines = [
+    'Доступные команды:',
+    '/help — показать эту подсказку',
+    '/status — базовая проверка доступности бота',
+  ];
+  if (!user?.isLead) {
+    commandLines.push('/review — показать MR, где нужен твой ревью');
+  }
+  commandLines.push(
+    '/my_mrs — показать активные MR, где ты автор',
+    '/mrs — показать активные MR и их статус',
+  );
+  if (user?.isLead) {
+    commandLines.push(
+      '/final — показать MR для финальной проверки',
+      '/allow — добавить пользователя в whitelist',
+    );
+  }
   return ctx.reply(
-    [
-      'Доступные команды:',
-      '/help — показать эту подсказку',
-      '/status — базовая проверка доступности бота',
-      '/review — показать MR, где нужен твой ревью',
-      '/mrs — показать активные MR и их статус',
-      '/final — показать MR для финальной проверки (только лиды)',
-      '/allow — добавить пользователя в whitelist (только лиды)',
-    ].join('\n'),
+    commandLines.join('\n'),
     buildMainKeyboard(Boolean(user?.isLead)),
   );
 };
@@ -195,6 +208,34 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
   bot.command('mrs', handleMrs);
 
+  const handleMyMrs = async (ctx: BotContext): Promise<void> => {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+    if (!user.gitlabUsername) {
+      await ctx.reply('Не могу определить твой GitLab username.');
+      return;
+    }
+
+    const mergeRequests = await listActiveMergeRequestsByAuthor(user.gitlabUsername, 10);
+    if (!mergeRequests.length) {
+      await ctx.reply('Активных MR, где ты автор, не найдено.');
+      return;
+    }
+
+    const messages = await buildMergeRequestMessages(mergeRequests);
+    for (const message of messages) {
+      await ctx.reply(message, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+      });
+    }
+  };
+
+  bot.command('my_mrs', handleMyMrs);
+
   const handleFinal = async (ctx: BotContext): Promise<void> => {
     const actor = await getUserByTelegramUsername(ctx.from?.username);
     if (!actor?.isLead) {
@@ -239,6 +280,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.command('final', handleFinal);
 
   bot.hears('На ревью', handleReview);
+  bot.hears('Мои MR', handleMyMrs);
   bot.hears('Все MR', handleMrs);
   bot.hears('Финал', handleFinal);
   bot.hears('Помощь', helpCommand);

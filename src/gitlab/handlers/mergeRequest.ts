@@ -19,13 +19,13 @@ import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { config } from '../../config';
-import { pullReviewers } from '../../data/reviewerQueue';
 import {
   markAllRemindersInactiveForMr,
   markReviewCompletedForApprovers,
   syncReviewRemindersForMr,
 } from '../../services/reviewReminderService';
-import { syncReviewersAndLabelsToGitlab } from '../../services/reviewerLabelSync';
+import { reconcileReviewersForMr } from '../../services/reviewerAssignment';
+import { withMergeRequestLock } from '../../services/mergeRequestLock';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -68,24 +68,10 @@ const isDraft = (attrs: any): boolean => {
   return isDraftTitle(attrs.title);
 };
 
-const assignReviewersIfNeeded = async (
-  doc: MergeRequestDocument,
-): Promise<string[] | undefined> => {
-  const existing = doc.reviewers ?? [];
-  const needed = Math.max(0, 2 - existing.length);
-  if (needed === 0) {
-    return existing;
-  }
-  const authorUsername = doc.author.gitlabUsername;
-  const exclude = [...existing, ...(authorUsername ? [authorUsername] : [])]
-    .filter(Boolean)
-    .map((name) => name.toLowerCase());
-  const baseReviewers = await pullReviewers(exclude);
-  const assignedReviewers = [...existing, ...baseReviewers.slice(0, needed)];
-  return assignedReviewers.length ? assignedReviewers : undefined;
-};
-
-export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+const handleMergeRequestEventUnlocked = async (
+  payload: any,
+  bot: Telegraf<BotContext>,
+): Promise<void> => {
   const project = payload.project ?? {};
   const attrs = payload.object_attributes ?? {};
   await persistGitlabUserProfileFromPayload(payload);
@@ -101,7 +87,6 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
   if (apiMergeRequest || apiApprovals) {
     const apiUsers = [
       apiMergeRequest?.author,
-      ...(apiMergeRequest?.reviewers ?? []),
       ...(apiApprovals?.approved_by ?? []).map((item) => item.user ?? {}),
     ];
     await persistGitlabUserProfiles(
@@ -164,8 +149,11 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     console.info(`[merge-request] Draft ended for MR ${doc.projectId}/${doc.iid}`);
   }
 
-  if (existingDoc?.reviewers?.length) {
+  if (existingDoc?.reviewers) {
     doc.reviewers = existingDoc.reviewers;
+  }
+  if (existingDoc?.reviewerLabels) {
+    doc.reviewerLabels = existingDoc.reviewerLabels;
   }
 
   if (attrs.description) {
@@ -256,36 +244,25 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
     doc.updatedAt = updatedAt;
   }
 
-  if (
-    (attrs.action === 'open' || attrs.action === 'update') &&
-    !doc.isDraft &&
-    !doc.reviewers?.length
-  ) {
-    const assignedReviewers = await assignReviewersIfNeeded(doc);
-    if (assignedReviewers?.length) {
-      doc.reviewers = assignedReviewers;
-    }
-  }
-
-  if ((attrs.action === 'open' || attrs.action === 'update') && !doc.isDraft && doc.reviewers?.length) {
-    const syncResult = await syncReviewersAndLabelsToGitlab(
-      doc.projectId,
-      doc.iid,
-      doc.reviewers,
-      {
-        reviewers:
-          apiMergeRequest?.reviewers
-            ?.map((reviewer) => reviewer.username ?? '')
-            .filter(Boolean) ?? [],
-        labels: apiMergeRequest?.labels ?? [],
-      },
+  if (attrs.action === 'open' || attrs.action === 'update') {
+    const reviewerState = await reconcileReviewersForMr(
+      doc,
+      apiMergeRequest?.labels,
     );
-    if (!syncResult.ok) {
+    doc.reviewers = reviewerState.reviewers;
+    doc.reviewerLabels = reviewerState.reviewerLabels;
+    if (reviewerState.labelsSyncOk) {
+      doc.reviewersSyncedAt = new Date();
+    } else {
+      doc.reviewersSyncFailedAt = new Date();
+      doc.reviewersSyncError = reviewerState.labelsSyncError ?? 'GitLab label sync failed';
       console.warn(
-        `[merge-request] Failed to sync reviewer labels for MR ${doc.projectId}/${doc.iid}: ${syncResult.error}`,
+        `[merge-request] Failed to sync reviewer labels for MR ${doc.projectId}/${doc.iid}: ${doc.reviewersSyncError}`,
       );
     }
   }
+
+  await upsertMergeRequest(doc);
 
   await syncReviewRemindersForMr(
     { projectId: doc.projectId, iid: doc.iid },
@@ -308,24 +285,21 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
-      eventType: 'mr_created',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-    });
     const authorRecipient = doc.author.gitlabUsername
       ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
-    if (authorRecipient) {
-      await deliverHtmlMessage(bot, authorRecipient, message, {
-        eventType: 'mr_created',
-        projectId: doc.projectId,
-        mrIid: doc.iid,
-      });
-    }
+    const recipients = [
+      ...(await getLeadRecipients()),
+      ...(authorRecipient ? [authorRecipient] : []),
+    ];
+    const notificationId = attrs.created_at ?? attrs.updated_at;
+    await deliverHtmlMessageToRecipients(bot, recipients, message, {
+      eventType: 'mr_created',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+      ...(notificationId ? { dedupeId: String(notificationId) } : {}),
+    });
   }
-
-  await upsertMergeRequest(doc);
 
   let nextApprovers: string[] | undefined;
   if (!apiApprovals && (attrs.action === 'approved' || attrs.action === 'unapproved')) {
@@ -355,21 +329,20 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
-      eventType: 'mr_closed',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-    });
     const authorRecipient = doc.author.gitlabUsername
       ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
-    if (authorRecipient) {
-      await deliverHtmlMessage(bot, authorRecipient, message, {
-        eventType: 'mr_closed',
-        projectId: doc.projectId,
-        mrIid: doc.iid,
-      });
-    }
+    const recipients = [
+      ...(await getLeadRecipients()),
+      ...(authorRecipient ? [authorRecipient] : []),
+    ];
+    const notificationId = `${attrs.action}:${attrs.updated_at ?? ''}`;
+    await deliverHtmlMessageToRecipients(bot, recipients, message, {
+      eventType: 'mr_closed',
+      projectId: doc.projectId,
+      mrIid: doc.iid,
+      dedupeId: notificationId,
+    });
     await markAllRemindersInactiveForMr({ projectId: doc.projectId, iid: doc.iid });
     return;
   }
@@ -431,4 +404,19 @@ export const handleMergeRequestEvent = async (payload: any, bot: Telegraf<BotCon
       await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
     }
   }
+};
+
+export const handleMergeRequestEvent = async (
+  payload: any,
+  bot: Telegraf<BotContext>,
+): Promise<void> => {
+  const projectId = payload.project?.id;
+  const iid = payload.object_attributes?.iid;
+  if (typeof projectId !== 'number' || typeof iid !== 'number') {
+    await handleMergeRequestEventUnlocked(payload, bot);
+    return;
+  }
+  await withMergeRequestLock(projectId, iid, () =>
+    handleMergeRequestEventUnlocked(payload, bot),
+  );
 };

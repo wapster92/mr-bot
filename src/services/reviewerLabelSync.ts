@@ -1,67 +1,68 @@
-import { updateMergeRequest } from '../data/mergeRequestRepository';
 import {
-  fetchUserByUsername,
-  updateMergeRequestReviewersAndLabels,
-} from '../gitlab/api';
-import {
-  getGitlabUserIdByUsername,
   getGitlabUserProfile,
   upsertGitlabUserProfile,
 } from '../data/userStore';
+import { fetchUserByUsername, updateMergeRequestLabels } from '../gitlab/api';
 
-type SyncTargetState = {
-  reviewers?: string[];
-  labels?: string[];
-};
-
-const SYNC_DEDUPE_WINDOW_MS = 2 * 60 * 1000;
-const recentSyncAttempts = new Map<string, number>();
+const LABEL_EDIT_COOLDOWN_MS = 2 * 60 * 1000;
+const recentSuccessfulTargets = new Map<string, number>();
+const recentEditAttempts = new Map<string, number>();
 
 const normalizeValues = (values: string[]): string[] =>
-  values.map((value) => value.trim()).filter(Boolean);
+  Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
+
+const normalizeForComparison = (value: string): string => value.trim().toLowerCase();
 
 const areSameStringSets = (left: string[], right: string[]): boolean => {
   if (left.length !== right.length) {
     return false;
   }
 
-  const normalizedLeft = [...normalizeValues(left)].sort((a, b) => a.localeCompare(b));
-  const normalizedRight = [...normalizeValues(right)].sort((a, b) => a.localeCompare(b));
-
+  const normalizedLeft = [...left].map(normalizeForComparison).sort();
+  const normalizedRight = [...right].map(normalizeForComparison).sort();
   return normalizedLeft.every((value, index) => value === normalizedRight[index]);
 };
 
-const buildSyncKey = (
-  projectId: number,
-  iid: number,
-  reviewers: string[],
-  labels: string[],
-): string =>
+const buildSyncKey = (projectId: number, iid: number, labels: string[]): string =>
   JSON.stringify({
     projectId,
     iid,
-    reviewers: [...normalizeValues(reviewers)].sort((a, b) => a.localeCompare(b)),
-    labels: [...normalizeValues(labels)].sort((a, b) => a.localeCompare(b)),
+    labels: [...labels].map(normalizeForComparison).sort(),
   });
 
-const shouldSkipRecentAttempt = (key: string): boolean => {
-  const now = Date.now();
-  for (const [entryKey, timestamp] of recentSyncAttempts.entries()) {
-    if (now - timestamp > SYNC_DEDUPE_WINDOW_MS) {
-      recentSyncAttempts.delete(entryKey);
+const pruneRecentEntries = (entries: Map<string, number>, now: number): void => {
+  for (const [entryKey, timestamp] of entries.entries()) {
+    if (now - timestamp > LABEL_EDIT_COOLDOWN_MS) {
+      entries.delete(entryKey);
     }
   }
-
-  const previousAttemptAt = recentSyncAttempts.get(key);
-  if (previousAttemptAt && now - previousAttemptAt < SYNC_DEDUPE_WINDOW_MS) {
-    return true;
-  }
-
-  recentSyncAttempts.set(key, now);
-  return false;
 };
 
-const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[]> => {
+const wasRecentlySynced = (key: string, now: number): boolean => {
+  pruneRecentEntries(recentSuccessfulTargets, now);
+  const previousAttemptAt = recentSuccessfulTargets.get(key);
+  return Boolean(
+    previousAttemptAt && now - previousAttemptAt < LABEL_EDIT_COOLDOWN_MS,
+  );
+};
+
+const isEditCoolingDown = (projectId: number, iid: number, now: number): boolean => {
+  pruneRecentEntries(recentEditAttempts, now);
+  const previousAttemptAt = recentEditAttempts.get(`${projectId}:${iid}`);
+  return Boolean(
+    previousAttemptAt && now - previousAttemptAt < LABEL_EDIT_COOLDOWN_MS,
+  );
+};
+
+const markEditAttempt = (projectId: number, iid: number, now: number): void => {
+  recentEditAttempts.set(`${projectId}:${iid}`, now);
+};
+
+const markSuccessfulTarget = (key: string, now: number): void => {
+  recentSuccessfulTargets.set(key, now);
+};
+
+export const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[]> => {
   const labels: string[] = [];
 
   for (const rawUsername of reviewerUsernames) {
@@ -80,103 +81,82 @@ const buildReviewerLabels = async (reviewerUsernames: string[]): Promise<string[
     if (apiUser?.username) {
       await upsertGitlabUserProfile(apiUser.username, apiUser.name, apiUser.id);
     }
-    if (apiUser?.name?.trim()) {
-      labels.push(apiUser.name.trim());
-      continue;
-    }
-
-    labels.push(username);
+    labels.push(apiUser?.name?.trim() || username);
   }
 
-  return labels;
+  return normalizeValues(labels);
 };
 
-const resolveReviewerIds = async (usernames: string[]): Promise<number[] | null> => {
-  const reviewerIds: number[] = [];
-  const missing: string[] = [];
-
-  for (const username of usernames) {
-    const storedId = await getGitlabUserIdByUsername(username);
-    if (storedId) {
-      reviewerIds.push(storedId);
+export const mergeReviewerLabels = (
+  currentLabels: string[],
+  previousReviewerLabels: string[],
+  nextReviewerLabels: string[],
+): string[] => {
+  const previousSet = new Set(previousReviewerLabels.map(normalizeForComparison));
+  const result = currentLabels.filter(
+    (label) => !previousSet.has(normalizeForComparison(label)),
+  );
+  const resultSet = new Set(result.map(normalizeForComparison));
+  for (const label of nextReviewerLabels) {
+    const normalized = normalizeForComparison(label);
+    if (!normalized || resultSet.has(normalized)) {
       continue;
     }
-    const apiUser = await fetchUserByUsername(username);
-    if (apiUser?.id) {
-      reviewerIds.push(apiUser.id);
-      if (apiUser.username) {
-        await upsertGitlabUserProfile(apiUser.username, apiUser.name, apiUser.id);
-      }
-      continue;
-    }
-    missing.push(username);
+    result.push(label.trim());
+    resultSet.add(normalized);
   }
-
-  if (missing.length) {
-    console.warn('[reviewer-label-sync] Cannot resolve GitLab IDs for reviewers', missing.join(', '));
-    return null;
-  }
-
-  return reviewerIds;
+  return result;
 };
 
-export const syncReviewersAndLabelsToGitlab = async (
+export const syncReviewerLabelsToGitlab = async (
   projectId: number,
   iid: number,
-  reviewerUsernames: string[],
-  currentState?: SyncTargetState,
-): Promise<{ ok: boolean; error?: string }> => {
-  if (!reviewerUsernames.length) {
-    return { ok: false, error: 'empty reviewer list' };
+  currentLabels: string[] | undefined,
+  previousReviewerLabels: string[],
+  nextReviewerLabels: string[],
+): Promise<{ ok: boolean; labels: string[]; error?: string }> => {
+  if (!currentLabels) {
+    return {
+      ok: false,
+      labels: nextReviewerLabels,
+      error: 'current GitLab labels are unavailable',
+    };
   }
 
-  const normalizedReviewerUsernames = normalizeValues(reviewerUsernames);
-  const reviewerIds = await resolveReviewerIds(reviewerUsernames);
-  if (!reviewerIds?.length) {
-    return { ok: false, error: 'cannot resolve reviewer ids' };
+  const labels = mergeReviewerLabels(
+    currentLabels,
+    previousReviewerLabels,
+    nextReviewerLabels,
+  );
+  if (areSameStringSets(labels, currentLabels)) {
+    console.info(`[reviewer-label-sync] skip unchanged ${projectId}/${iid}`);
+    return { ok: true, labels };
   }
 
-  const labels = await buildReviewerLabels(reviewerUsernames);
-  if (
-    currentState &&
-    areSameStringSets(
-      normalizedReviewerUsernames,
-      normalizeValues(currentState.reviewers ?? []),
-    ) &&
-    areSameStringSets(labels, normalizeValues(currentState.labels ?? []))
-  ) {
-    console.info(
-      `[reviewer-label-sync] skip unchanged ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
-    );
-    return { ok: true };
+  const syncKey = buildSyncKey(projectId, iid, labels);
+  const now = Date.now();
+  if (wasRecentlySynced(syncKey, now)) {
+    console.warn(`[reviewer-label-sync] skip dedupe ${projectId}/${iid}`);
+    return { ok: true, labels };
   }
 
-  const syncKey = buildSyncKey(projectId, iid, normalizedReviewerUsernames, labels);
-  if (shouldSkipRecentAttempt(syncKey)) {
-    console.warn(
-      `[reviewer-label-sync] skip dedupe ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
-    );
-    return { ok: true };
+  if (isEditCoolingDown(projectId, iid, now)) {
+    console.warn(`[reviewer-label-sync] skip cooldown ${projectId}/${iid}`);
+    return {
+      ok: false,
+      labels,
+      error: 'GitLab label edit deferred by cooldown',
+    };
   }
+  markEditAttempt(projectId, iid, now);
 
   console.info(
-    `[reviewer-label-sync] edit ${projectId}/${iid} reviewers=${normalizedReviewerUsernames.join(',')} labels=${labels.join(',')}`,
+    `[reviewer-label-sync] edit ${projectId}/${iid} labels=${labels.join(',')}`,
   );
-
-  const ok = await updateMergeRequestReviewersAndLabels(projectId, iid, reviewerIds, labels);
-
+  const ok = await updateMergeRequestLabels(projectId, iid, labels);
   if (ok) {
-    await updateMergeRequest(projectId, iid, {
-      reviewers: normalizedReviewerUsernames,
-      reviewersSyncedAt: new Date(),
-    });
-    return { ok: true };
+    markSuccessfulTarget(syncKey, now);
+    return { ok: true, labels };
   }
-
-  const error = 'gitlab edit failed';
-  await updateMergeRequest(projectId, iid, {
-    reviewersSyncFailedAt: new Date(),
-    reviewersSyncError: error,
-  });
-  return { ok: false, error };
+  return { ok: false, labels, error: 'GitLab label edit failed' };
 };

@@ -1,10 +1,12 @@
 import { config } from '../config';
 import {
+  findMergeRequest,
   listOpenMergeRequests,
   updateMergeRequest,
   upsertMergeRequest,
   listProjectIds,
 } from '../data/mergeRequestRepository';
+import type { MergeRequestDocument } from '../data/mergeRequestRepository';
 import {
   fetchMergeRequest,
   fetchMergeRequestApprovals,
@@ -17,9 +19,9 @@ import { getLeadRecipients, getRecipientByGitlabUsername } from '../messages/rec
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
 import { listLeadUsers } from '../data/userStore';
-import { pullReviewers } from '../data/reviewerQueue';
 import { markReviewCompletedForApprovers, syncReviewRemindersForMr } from './reviewReminderService';
-import { syncReviewersAndLabelsToGitlab } from './reviewerLabelSync';
+import { reconcileReviewersForMr } from './reviewerAssignment';
+import { withMergeRequestLock } from './mergeRequestLock';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -39,92 +41,6 @@ const parseDate = (value?: string): Date | undefined => {
 
 const isDraftTitle = (title?: string): boolean =>
   /^draft[: ]/i.test((title ?? '').trim());
-
-const syncReviewersToGitlab = async (
-  projectId: number,
-  iid: number,
-  reviewerUsernames: string[],
-  currentState?: {
-    reviewers?: string[];
-    labels?: string[];
-  },
-): Promise<{ ok: boolean; error?: string }> => {
-  return syncReviewersAndLabelsToGitlab(projectId, iid, reviewerUsernames, currentState);
-};
-
-const normalizeOpenMergeRequests = async (): Promise<void> => {
-  const mergeRequests = await listOpenMergeRequests();
-  if (!mergeRequests.length) {
-    return;
-  }
-
-  const leads = await listLeadUsers();
-  const leadUsernamesLower = new Set(
-    leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
-  );
-
-  for (const mr of mergeRequests) {
-    const isDraft = mr.isDraft ?? isDraftTitle(mr.title);
-    if (isDraft) {
-      await syncReviewRemindersForMr(
-        { projectId: mr.projectId, iid: mr.iid },
-        mr.reviewers ?? [],
-        new Date(),
-        true,
-      );
-      continue;
-    }
-    const currentReviewers = mr.reviewers ?? [];
-    const filteredReviewers = currentReviewers.filter(
-      (reviewer) => !leadUsernamesLower.has(reviewer.toLowerCase()),
-    );
-    const needed = Math.max(0, 2 - filteredReviewers.length);
-    let updatedReviewers = filteredReviewers;
-
-    if (needed > 0) {
-      const exclude = [
-        ...filteredReviewers,
-        mr.author?.gitlabUsername ?? '',
-      ]
-        .filter(Boolean)
-        .map((name) => name.toLowerCase());
-      const picked = await pullReviewers(exclude);
-      updatedReviewers = [...filteredReviewers, ...picked.slice(0, needed)];
-    }
-
-    const changed =
-      updatedReviewers.length !== currentReviewers.length ||
-      updatedReviewers.some(
-        (reviewer, index) => reviewer !== currentReviewers[index],
-      );
-
-    if (changed) {
-      await updateMergeRequest(mr.projectId, mr.iid, {
-        reviewers: updatedReviewers,
-        reviewersSyncedAt: new Date(),
-      });
-    }
-    if (changed && updatedReviewers.length) {
-      const syncResult = await syncReviewersToGitlab(
-        mr.projectId,
-        mr.iid,
-        updatedReviewers,
-      );
-      if (!syncResult.ok) {
-        console.warn(
-          `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,
-        );
-      }
-    }
-    await syncReviewRemindersForMr(
-      { projectId: mr.projectId, iid: mr.iid },
-      updatedReviewers,
-      new Date(),
-      mr.isDraft ?? isDraftTitle(mr.title),
-      false,
-    );
-  }
-};
 
 const backfillMissingMergeRequests = async (): Promise<void> => {
   const allowedProjectIds =
@@ -279,7 +195,6 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
       if (apiMergeRequest || apiApprovals) {
         const apiUsers = [
           apiMergeRequest?.author,
-          ...(apiMergeRequest?.reviewers ?? []),
           ...(apiApprovals?.approved_by ?? []).map((item) => item.user ?? {}),
         ];
         await persistGitlabUserProfiles(
@@ -406,58 +321,56 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         await updateMergeRequest(mr.projectId, mr.iid, update);
       }
 
-      // Назначаем ревьюеров, если их нет или только один (используем очередь разработчиков).
       const previousDraft = mr.isDraft ?? isDraftTitle(mr.title);
-      const isDraft = (update.isDraft as boolean | undefined) ?? previousDraft;
+      const apiIsDraft = (update.isDraft as boolean | undefined) ?? previousDraft;
+      const reviewerSync = await withMergeRequestLock(
+        mr.projectId,
+        mr.iid,
+        async () => {
+          const latestApiMergeRequest = await fetchMergeRequest(mr.projectId, mr.iid);
+          const effectiveIsDraft = latestApiMergeRequest
+            ? Boolean(
+                latestApiMergeRequest.work_in_progress ||
+                  latestApiMergeRequest.draft ||
+                  isDraftTitle(latestApiMergeRequest.title),
+              )
+            : apiIsDraft;
+          const storedMr = (await findMergeRequest(mr.projectId, mr.iid)) ?? mr;
+          const state = await reconcileReviewersForMr(
+            {
+              ...storedMr,
+              ...(update.author
+                ? { author: update.author as MergeRequestDocument['author'] }
+                : {}),
+              isDraft: effectiveIsDraft,
+            },
+            latestApiMergeRequest?.labels,
+          );
+          const reviewerUpdate: Partial<MergeRequestDocument> = {
+            isDraft: effectiveIsDraft,
+            reviewers: state.reviewers,
+            reviewerLabels: state.reviewerLabels,
+          };
+          if (state.labelsSyncOk) {
+            reviewerUpdate.reviewersSyncedAt = new Date();
+          } else {
+            reviewerUpdate.reviewersSyncFailedAt = new Date();
+            reviewerUpdate.reviewersSyncError =
+              state.labelsSyncError ?? 'GitLab label sync failed';
+            console.warn(
+              `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${reviewerUpdate.reviewersSyncError}`,
+            );
+          }
+          await updateMergeRequest(mr.projectId, mr.iid, reviewerUpdate);
+          return { state, isDraft: effectiveIsDraft };
+        },
+      );
+      const reviewerState = reviewerSync.state;
+      const isDraft = reviewerSync.isDraft;
       if (previousDraft && !isDraft) {
         console.info(`[sync] Draft ended for MR ${mr.projectId}/${mr.iid}`);
       }
-      let currentReviewers =
-        (update.reviewers as string[] | undefined) ?? mr.reviewers ?? [];
-      const neededDev = Math.max(0, 2 - currentReviewers.length);
-      if (neededDev > 0 && !isDraft) {
-        const exclude = [
-          ...currentReviewers,
-          mr.author?.gitlabUsername ?? '',
-        ]
-          .filter(Boolean)
-          .map((r) => r.toLowerCase());
-        const picked = await pullReviewers(exclude);
-        const addDevs = picked.slice(0, neededDev);
-
-        const assignedSet = new Set<string>(currentReviewers);
-        for (const dev of addDevs) {
-          assignedSet.add(dev);
-        }
-        const assigned = Array.from(assignedSet);
-        if (assigned.length) {
-          const updateReviewers: Record<string, unknown> = {
-            reviewers: assigned,
-            reviewersSyncedAt: new Date(),
-          };
-          await updateMergeRequest(mr.projectId, mr.iid, updateReviewers);
-          currentReviewers = assigned;
-        }
-      }
-      if (currentReviewers.length && !isDraft) {
-        const syncResult = await syncReviewersToGitlab(
-          mr.projectId,
-          mr.iid,
-          currentReviewers,
-          {
-            reviewers:
-              apiMergeRequest?.reviewers
-                ?.map((reviewer) => reviewer.username ?? '')
-                .filter(Boolean) ?? [],
-            labels: apiMergeRequest?.labels ?? [],
-          },
-        );
-        if (!syncResult.ok) {
-          console.warn(
-            `[sync] Failed to sync reviewer labels for MR ${mr.projectId}/${mr.iid}: ${syncResult.error}`,
-          );
-        }
-      }
+      const currentReviewers = reviewerState.reviewers;
 
       await syncReviewRemindersForMr(
         { projectId: mr.projectId, iid: mr.iid },
@@ -517,7 +430,7 @@ export const startMergeRequestSync = (bot: Telegraf<BotContext>): void => {
     return;
   }
   syncBot = bot;
-  void normalizeOpenMergeRequests().then(syncOpenMergeRequests);
+  void syncOpenMergeRequests();
   syncTimer = setInterval(() => {
     void syncOpenMergeRequests();
   }, SYNC_INTERVAL_MS);

@@ -14,6 +14,11 @@ if (!mongoUri) {
 }
 
 const normalizeUsername = (value) => String(value || '').trim().toLowerCase();
+const DEFAULT_WORK_HOURS = {
+  start: '09:00',
+  end: '18:00',
+  timezone: 'Europe/Moscow',
+};
 
 const parseUsers = (raw) => {
   const rows = JSON.parse(raw);
@@ -38,7 +43,11 @@ const parseUsers = (raw) => {
       isAllowed: item.isAllowed !== false,
       ...(typeof item.isActive === 'boolean' ? { isActive: item.isActive } : { isActive: true }),
       ...(typeof item.isLead === 'boolean' ? { isLead: item.isLead } : {}),
-      ...(item.workHours ? { workHours: item.workHours } : {}),
+      workHours: {
+        start: item.workHours?.start || DEFAULT_WORK_HOURS.start,
+        end: item.workHours?.end || DEFAULT_WORK_HOURS.end,
+        timezone: item.workHours?.timezone || DEFAULT_WORK_HOURS.timezone,
+      },
       ...(typeof item.ignoreWorkHours === 'boolean'
         ? { ignoreWorkHours: item.ignoreWorkHours }
         : {}),

@@ -1,5 +1,6 @@
 import type { Collection } from 'mongodb';
 import { getDb } from '../db/mongo';
+import { createDefaultWorkHours } from './userTypes';
 import type { UserRecord } from './userTypes';
 
 export type UserDocument = UserRecord & {
@@ -11,7 +12,9 @@ const COLLECTION_NAME = 'users';
 
 const normalizeUsername = (username: string): string => username.toLowerCase();
 
-const getCollection = async (): Promise<Collection<UserDocument>> => {
+let collectionInitialization: Promise<Collection<UserDocument>> | undefined;
+
+const initializeCollection = async (): Promise<Collection<UserDocument>> => {
   const db = await getDb();
   const collection = db.collection<UserDocument>(COLLECTION_NAME);
   await collection.createIndex({ gitlabUsernameLower: 1 }, { unique: true });
@@ -19,7 +22,21 @@ const getCollection = async (): Promise<Collection<UserDocument>> => {
   await collection.createIndex({ telegramUsernameLower: 1 }, { unique: true, sparse: true });
   await collection.createIndex({ telegramUserId: 1 }, { unique: true, sparse: true });
   await collection.createIndex({ chatId: 1 }, { unique: true, sparse: true });
+  await collection.updateMany(
+    { workHours: { $exists: false } },
+    { $set: { workHours: createDefaultWorkHours() } },
+  );
   return collection;
+};
+
+const getCollection = async (): Promise<Collection<UserDocument>> => {
+  if (!collectionInitialization) {
+    collectionInitialization = initializeCollection().catch((error: unknown) => {
+      collectionInitialization = undefined;
+      throw error;
+    });
+  }
+  return collectionInitialization;
 };
 
 export const getUserByTelegramUsername = async (
@@ -48,7 +65,8 @@ export const getReviewerByTelegramUsername = async (
     (await collection.findOne({
       telegramUsernameLower: normalizeUsername(username),
       gitlabUsername: { $type: 'string' },
-      $or: [{ isAllowed: true }, { isActive: true }],
+      isAllowed: true,
+      isActive: { $ne: false },
     })) ?? undefined
   );
 };
@@ -70,7 +88,7 @@ export const getUserByGitlabUsername = async (
 
 export const listLeadUsers = async (): Promise<UserDocument[]> => {
   const collection = await getCollection();
-  return collection.find({ isLead: true, isAllowed: true }).toArray();
+  return collection.find({ isLead: true, isAllowed: true, isActive: { $ne: false } }).toArray();
 };
 
 export const listActiveReviewers = async (): Promise<string[]> => {
@@ -131,6 +149,7 @@ export const upsertAllowedUser = async (input: {
       $setOnInsert: {
         isActive: true,
         isLead: false,
+        workHours: createDefaultWorkHours(),
         createdAt: new Date(),
       },
     },
@@ -207,7 +226,6 @@ export const getGitlabUserProfile = async (
   const collection = await getCollection();
   return collection.findOne({
     gitlabUsernameLower: normalizeUsername(username),
-    isAllowed: true,
   });
 };
 

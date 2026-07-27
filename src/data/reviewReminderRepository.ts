@@ -12,6 +12,7 @@ export type ReviewReminderDocument = {
   reviewCompletedAt?: Date;
   escalatedAt?: Date;
   inactiveAt?: Date;
+  processingAt?: Date;
 };
 
 const COLLECTION_NAME = 'review_reminders';
@@ -23,6 +24,7 @@ const getCollection = async (): Promise<Collection<ReviewReminderDocument>> => {
   await collection.createIndex({ reviewCompletedAt: 1 });
   await collection.createIndex({ escalatedAt: 1 });
   await collection.createIndex({ inactiveAt: 1 });
+  await collection.createIndex({ processingAt: 1 });
   return collection;
 };
 
@@ -100,6 +102,7 @@ export const resetReviewReminder = async (input: {
         reviewCompletedAt: '',
         escalatedAt: '',
         inactiveAt: '',
+        processingAt: '',
       },
     },
   );
@@ -118,7 +121,10 @@ export const markReminderInactive = async (
       iid,
       reviewerUsernameLower: reviewerUsername.toLowerCase(),
     },
-    { $set: { inactiveAt } },
+    {
+      $set: { inactiveAt },
+      $unset: { processingAt: '' },
+    },
   );
 };
 
@@ -135,7 +141,56 @@ export const markReviewCompleted = async (
       iid,
       reviewerUsernameLower: reviewerUsername.toLowerCase(),
     },
-    { $set: { reviewCompletedAt: completedAt } },
+    {
+      $set: { reviewCompletedAt: completedAt },
+      $unset: { processingAt: '' },
+    },
+  );
+};
+
+const PROCESSING_TIMEOUT_MS = 30 * 60 * 1000;
+
+export const claimReviewReminder = async (
+  projectId: number,
+  iid: number,
+  reviewerUsername: string,
+  processingAt = new Date(),
+): Promise<boolean> => {
+  const collection = await getCollection();
+  const staleProcessingAt = new Date(processingAt.getTime() - PROCESSING_TIMEOUT_MS);
+  const result = await collection.updateOne(
+    {
+      projectId,
+      iid,
+      reviewerUsernameLower: reviewerUsername.toLowerCase(),
+      reviewCompletedAt: { $exists: false },
+      escalatedAt: { $exists: false },
+      inactiveAt: { $exists: false },
+      $or: [
+        { processingAt: { $exists: false } },
+        { processingAt: { $lte: staleProcessingAt } },
+      ],
+    },
+    { $set: { processingAt } },
+  );
+  return result.modifiedCount === 1;
+};
+
+export const releaseReviewReminderClaim = async (
+  projectId: number,
+  iid: number,
+  reviewerUsername: string,
+  processingAt: Date,
+): Promise<void> => {
+  const collection = await getCollection();
+  await collection.updateOne(
+    {
+      projectId,
+      iid,
+      reviewerUsernameLower: reviewerUsername.toLowerCase(),
+      processingAt,
+    },
+    { $unset: { processingAt: '' } },
   );
 };
 
@@ -144,6 +199,7 @@ export const markEscalated = async (
   iid: number,
   reviewerUsername: string,
   escalatedAt = new Date(),
+  processingAt?: Date,
 ): Promise<void> => {
   const collection = await getCollection();
   await collection.updateOne(
@@ -151,8 +207,12 @@ export const markEscalated = async (
       projectId,
       iid,
       reviewerUsernameLower: reviewerUsername.toLowerCase(),
+      ...(processingAt ? { processingAt } : {}),
     },
-    { $set: { escalatedAt } },
+    {
+      $set: { escalatedAt },
+      $unset: { processingAt: '' },
+    },
   );
 };
 
@@ -161,6 +221,7 @@ export const incrementReminder = async (
   iid: number,
   reviewerUsername: string,
   reminderAt = new Date(),
+  processingAt?: Date,
 ): Promise<void> => {
   const collection = await getCollection();
   await collection.updateOne(
@@ -168,10 +229,12 @@ export const incrementReminder = async (
       projectId,
       iid,
       reviewerUsernameLower: reviewerUsername.toLowerCase(),
+      ...(processingAt ? { processingAt } : {}),
     },
     {
       $inc: { reminderCount: 1 },
       $set: { lastReminderAt: reminderAt },
+      $unset: { processingAt: '' },
     },
   );
 };

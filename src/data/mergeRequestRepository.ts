@@ -28,6 +28,7 @@ export type MergeRequestDocument = {
   action?: string;
   isDraft?: boolean;
   reviewers?: string[];
+  reviewerLabels?: string[];
   approvedBy?: string[];
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
@@ -81,6 +82,29 @@ export const listActiveMergeRequests = async (limit = 10): Promise<MergeRequestD
   const collection = await getCollection();
   return collection
     .find({
+      $and: [
+        { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
+      ],
+    })
+    .sort({ updatedAt: -1 })
+    .limit(limit)
+    .toArray();
+};
+
+const escapeRegex = (value: string): string =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+
+export const listActiveMergeRequestsByAuthor = async (
+  gitlabUsername: string,
+  limit = 10,
+): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({
+      'author.gitlabUsername': {
+        $regex: `^${escapeRegex(gitlabUsername)}$`,
+        $options: 'i',
+      },
       $and: [
         { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
       ],

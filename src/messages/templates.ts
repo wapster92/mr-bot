@@ -102,7 +102,7 @@ export const buildReviewReminderMessage = (
 export const buildReviewEscalationMessage = (
   input: MergeRequestMessageInput & { reviewerLabel: string },
 ): string => {
-  const header = `🚩 Эскалация: ревьюер ${escapeHtml(input.reviewerLabel)} не ответил по MR "${escapeHtml(input.title)}" 2 рабочих дня.`;
+  const header = `🚩 Требуется внимание: по MR «${escapeHtml(input.title)}» нет обратной связи от ревьюера ${input.reviewerLabel} уже два рабочих дня.`;
   const parts = buildMrParts(input, header);
   return parts.filter(Boolean).join('\n');
 };

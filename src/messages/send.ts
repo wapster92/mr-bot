@@ -70,24 +70,27 @@ export const deliverHtmlMessage = async (
 ): Promise<void> => {
   const mrKey = buildMrKey(meta);
   const dedupeKey = buildDedupeKey(recipient.chatId, meta);
-  const notificationId = await enqueueNotification({
-    chatId: recipient.chatId,
-    ...(recipient.telegramUsername ? { telegramUsername: recipient.telegramUsername } : {}),
-    ...(recipient.gitlabUsername ? { gitlabUsername: recipient.gitlabUsername } : {}),
-    ...(meta?.eventType ? { eventType: meta.eventType } : {}),
-    ...(mrKey ? { mrKey } : {}),
-    ...(dedupeKey ? { dedupeKey } : {}),
-    text,
-    createdAt: new Date(),
-  });
-  if (!recipient.isWithinHours) {
+  const notification = await enqueueNotification(
+    {
+      chatId: recipient.chatId,
+      ...(recipient.telegramUsername ? { telegramUsername: recipient.telegramUsername } : {}),
+      ...(recipient.gitlabUsername ? { gitlabUsername: recipient.gitlabUsername } : {}),
+      ...(meta?.eventType ? { eventType: meta.eventType } : {}),
+      ...(mrKey ? { mrKey } : {}),
+      ...(dedupeKey ? { dedupeKey } : {}),
+      text,
+      createdAt: new Date(),
+    },
+    recipient.isWithinHours ? 'processing' : 'pending',
+  );
+  if (!notification.shouldSend) {
     return;
   }
   try {
     await sendHtmlMessage(bot, recipient.chatId, text);
-    await markNotificationDelivered(notificationId);
+    await markNotificationDelivered(notification.id);
   } catch (error) {
-    await markNotificationError(notificationId, String(error));
+    await markNotificationError(notification.id, String(error));
     console.warn('[notify] Failed to deliver message', error);
   }
 };
@@ -98,7 +101,12 @@ export const deliverHtmlMessageToRecipients = async (
   text: string,
   meta?: NotificationMeta,
 ): Promise<void> => {
+  const deliveredChatIds = new Set<number>();
   for (const recipient of recipients) {
+    if (deliveredChatIds.has(recipient.chatId)) {
+      continue;
+    }
+    deliveredChatIds.add(recipient.chatId);
     await deliverHtmlMessage(bot, recipient, text, meta);
   }
 };

@@ -9,7 +9,6 @@ type GitlabUser = {
 
 export type GitlabMergeRequest = {
   author?: GitlabUser;
-  reviewers?: GitlabUser[];
   labels?: string[];
   title?: string;
   description?: string;
@@ -89,7 +88,7 @@ const getApiConfig = (): ApiConfig | undefined => {
   return {
     host,
     token,
-    retries: Math.max(1, config.gitlab.api?.retries ?? 3),
+    retries: Math.min(5, Math.max(1, config.gitlab.api?.retries ?? 3)),
     retryBaseMs: Math.max(0, config.gitlab.api?.retryBaseMs ?? 500),
     timeoutMs: Math.max(0, config.gitlab.api?.timeoutMs ?? 10000),
   };
@@ -107,11 +106,6 @@ const toGitlabUser = (user?: any): GitlabUser | undefined => {
   }
   return { id, username, name };
 };
-
-const normalizeUserList = (users?: any): GitlabUser[] =>
-  Array.isArray(users)
-    ? (users.map((user) => toGitlabUser(user)).filter(Boolean) as GitlabUser[])
-    : [];
 
 let gitlabClient: Gitlab | undefined;
 let gitlabHost: string | undefined;
@@ -202,11 +196,9 @@ export const fetchMergeRequest = async (
   }
   const result: GitlabMergeRequest = {};
   const author = toGitlabUser(response?.author);
-  const reviewers = normalizeUserList(response?.reviewers);
   if (author) {
     result.author = author;
   }
-  result.reviewers = reviewers;
   result.labels = Array.isArray(response?.labels)
     ? response.labels.filter((label: unknown): label is string => typeof label === 'string')
     : [];
@@ -394,29 +386,9 @@ export const fetchUserByUsername = async (
   return toGitlabUser(response[0]);
 };
 
-export const setMergeRequestReviewers = async (
+export const updateMergeRequestLabels = async (
   projectId: number,
   iid: number,
-  reviewerIds: number[],
-): Promise<boolean> => {
-  const api = getApiConfig();
-  if (!api) {
-    return false;
-  }
-  const client = getClient(api);
-  const payload = { reviewerIds };
-  const result = await withRetry(
-    api,
-    `MergeRequests.edit reviewers ${projectId}#${iid}`,
-    () => client.MergeRequests.edit(projectId, iid, payload),
-  );
-  return Boolean(result);
-};
-
-export const updateMergeRequestReviewersAndLabels = async (
-  projectId: number,
-  iid: number,
-  reviewerIds: number[],
   labels: string[],
 ): Promise<boolean> => {
   const api = getApiConfig();
@@ -425,12 +397,11 @@ export const updateMergeRequestReviewersAndLabels = async (
   }
   const client = getClient(api);
   const payload = {
-    reviewerIds,
     labels: labels.join(','),
   };
   const result = await withRetry(
-    api,
-    `MergeRequests.edit reviewers+labels ${projectId}#${iid}`,
+    { ...api, retries: 1 },
+    `MergeRequests.edit labels ${projectId}#${iid}`,
     () => client.MergeRequests.edit(projectId, iid, payload),
   );
   return Boolean(result);

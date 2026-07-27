@@ -3,6 +3,7 @@ import { getDb } from '../db/mongo';
 import { listActiveReviewers } from './userStore';
 
 const COLLECTION_NAME = 'reviewer_queue';
+let queueOperation = Promise.resolve();
 
 type ReviewerQueueDocument = {
   queue: string[];
@@ -15,7 +16,7 @@ const getCollection = async (): Promise<Collection<ReviewerQueueDocument>> => {
 };
 
 const baseReviewerList = async (): Promise<string[]> => {
-  return  await listActiveReviewers();
+  return listActiveReviewers();
 };
 
 export const refreshQueue = async (): Promise<string[]> => {
@@ -47,14 +48,22 @@ export const saveQueue = async (queue: string[]): Promise<void> => {
   );
 };
 
-export const pullReviewers = async (exclude: string[]): Promise<string[]> => {
-  const normalizedExclude = exclude.map((item) => item.toLowerCase());
+const pullReviewersUnlocked = async (exclude: string[]): Promise<string[]> => {
+  const normalizedExclude = new Set(exclude.map((item) => item.toLowerCase()));
+  const activeReviewers = await baseReviewerList();
+  const activeSet = new Set(activeReviewers.map((item) => item.toLowerCase()));
   let queue = await fetchQueue();
   const selected: string[] = [];
+  const selectedSet = new Set<string>();
+  let refreshed = false;
 
   while (selected.length < 2) {
     if (!queue.length) {
+      if (refreshed) {
+        break;
+      }
       queue = await refreshQueue();
+      refreshed = true;
     }
 
     const next = queue.shift();
@@ -62,16 +71,34 @@ export const pullReviewers = async (exclude: string[]): Promise<string[]> => {
       break;
     }
 
+    const normalizedNext = next.toLowerCase();
     if (
-      normalizedExclude.includes(next.toLowerCase()) ||
-      selected.map((n) => n.toLowerCase()).includes(next.toLowerCase())
+      !activeSet.has(normalizedNext) ||
+      normalizedExclude.has(normalizedNext) ||
+      selectedSet.has(normalizedNext)
     ) {
       continue;
     }
 
     selected.push(next);
+    selectedSet.add(normalizedNext);
   }
 
   await saveQueue(queue);
   return selected;
+};
+
+export const pullReviewers = async (exclude: string[]): Promise<string[]> => {
+  const previous = queueOperation;
+  let release = (): void => {};
+  queueOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous.catch(() => {});
+  try {
+    return await pullReviewersUnlocked(exclude);
+  } finally {
+    release();
+  }
 };

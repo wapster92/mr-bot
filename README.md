@@ -15,6 +15,7 @@
 | `npm run dev`   | Запуск в dev-режиме (ts-node-dev)       |
 | `npm run build` | Компиляция TypeScript в `dist/`         |
 | `npm start`     | Запуск собранного бота из `dist/`       |
+| `npm run import:users` | Импорт пользователей из `users.json` |
 
 ## Docker Compose
 
@@ -64,12 +65,48 @@ docker compose -f docker-compose.yml -f docker-compose.vpn.yml logs -f openvpn
 ### Пользователи
 
 - Основной источник прав доступа теперь коллекция `users` в MongoDB.
-- Для первичной загрузки можно использовать `users.json` в корне проекта:
+- Для первичной загрузки и добавления отсутствующих пользователей можно использовать
+  `users.json` в корне проекта:
+
+```json
+[
+  {
+    "gitlabUsername": "ivanov.ii",
+    "telegramUsername": "ivanov_ii",
+    "name": "Иван Иванов",
+    "isAllowed": true,
+    "isActive": true,
+    "isLead": false,
+    "workHours": {
+      "start": "09:00",
+      "end": "18:00",
+      "timezone": "Europe/Moscow"
+    },
+    "ignoreWorkHours": false
+  }
+]
+```
+
+  Импорт обновляет найденного пользователя по `gitlabUsername` или создаёт нового.
+  Если `workHours` не указан, автоматически используется и сохраняется график
+  `09:00–18:00` в часовом поясе `Europe/Moscow`.
 
 ```bash
 npm run import:users
 ```
 
+- Лид может добавить отсутствующего пользователя прямо в Telegram:
+
+```text
+/allow @telegramUsername gitlab.username Имя Фамилия
+```
+
+- `isAllowed: false` запрещает доступ, `isActive: false` отключает пользователя.
+  Отложенные уведомления для удалённых, запрещённых и отключённых пользователей не
+  отправляются.
+- Суббота и воскресенье всегда считаются выходными в часовом поясе пользователя.
+  `ignoreWorkHours: true` отключает проверку времени только с понедельника по пятницу,
+  но не разрешает уведомления в выходные.
 - При первом `/start` бот сверяет username, и если пользователь разрешён, сохраняет `chat_id` в MongoDB. Поэтому каждому члену команды нужно один раз открыть бота и выполнить `/start`.
 
 ### MongoDB
@@ -81,6 +118,12 @@ npm run import:users
 
 - Настрой `GITLAB_WEBHOOK_PATH` (по умолчанию `/gitlab/webhook`) и `GITLAB_WEBHOOK_TOKEN` в `.env`.
 - В настройках проекта/группы GitLab создай Webhook с URL `https://<домен><GITLAB_WEBHOOK_PATH>` и тем же секретом в поле "Secret Token".
+- Бот выбирает двух ревьюеров при создании не-Draft MR или при выходе MR из Draft и
+  хранит выбранные username в MongoDB. Поле Reviewers самого GitLab бот не изменяет:
+  выбранные ревьюеры отражаются только в labels, остальные labels сохраняются.
+- Записанные в MongoDB ревьюеры сохраняются, пока пользователь активен и имеет доступ.
+  Недоступный пользователь заменяется через очередь. При возврате MR в Draft ревьюеры
+  и соответствующие им labels удаляются; после выхода из Draft назначается новая пара.
 - Все входящие payload'ы сохраняются в `logs/gitlab-events/<timestamp>-<event>.json`, так что можно изучить реальный JSON перед реализацией логики.
 - При ударе GitLab бот проверит заголовок `X-Gitlab-Token`, залогирует тип события (`X-Gitlab-Event`) и вернёт `{status:"ok"}`. Пока логика уведомлений не реализована — можно смотреть события через логи приложения/файлы.
 
