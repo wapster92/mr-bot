@@ -39,7 +39,7 @@ export const buildMergeRequestClosedMessage = (
 };
 
 export const buildFinalReviewMessage = (input: MergeRequestMessageInput): string => {
-  const header = `✅ MR "${escapeHtml(input.title)}" набрал все апрувы. Проведи финальную проверку.`;
+  const header = `✅ MR "${escapeHtml(input.title)}" получил approve разработчика. Нужна финальная проверка лида.`;
   const parts = buildMrParts(input, header);
   return parts.filter(Boolean).join('\n');
 };

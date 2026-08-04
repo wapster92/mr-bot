@@ -99,11 +99,19 @@ describe('merge readiness', () => {
     'lead.user',
   ]);
 
-  it('requires green lint, two regular approves and one lead approve', () => {
+  it('requires green lint, one developer approve and one lead approve', () => {
     assert.equal(isMergeRequestGameReady(createMergeRequest(), leads, activeUsers), true);
     assert.equal(
       isMergeRequestGameReady(
         createMergeRequest({ approvedBy: ['reviewer.one', 'lead.user'] }),
+        leads,
+        activeUsers,
+      ),
+      true,
+    );
+    assert.equal(
+      isMergeRequestGameReady(
+        createMergeRequest({ approvedBy: ['reviewer.one', 'reviewer.two'] }),
         leads,
         activeUsers,
       ),

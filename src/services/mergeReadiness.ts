@@ -5,6 +5,7 @@ import {
 } from '../data/mergeRequestRepository';
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
 import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { hasRequiredMergeApprovals, summarizeApprovals } from './approvalPolicy';
 
 const BLOCKING_MERGE_STATUSES = new Set(['cannot_be_merged']);
 const BLOCKING_DETAILED_STATUSES = new Set([
@@ -44,9 +45,7 @@ export const isMergeRequestGameReady = (
   const approvers = Array.from(
     new Set((mr.approvedBy ?? []).map((username) => username.toLowerCase())),
   ).filter((username) => activeUsernames.has(username));
-  const leadApprovals = approvers.filter((username) => leadUsernames.has(username));
-  const reviewerApprovals = approvers.filter((username) => !leadUsernames.has(username));
-  return leadApprovals.length >= 1 && reviewerApprovals.length >= 2;
+  return hasRequiredMergeApprovals(summarizeApprovals(approvers, leadUsernames));
 };
 
 export const syncMergeRequestGameReadiness = async (

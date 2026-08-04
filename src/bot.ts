@@ -17,6 +17,7 @@ import { buildMergeRequestMessages } from './services/mrSummary';
 import { flushNotificationQueue } from './services/notificationQueue';
 import { listErroredNotifications } from './data/notificationQueueRepository';
 import { buildGameProfileMessage, buildGameTopMessage } from './services/gameStats';
+import { needsLeadReview, summarizeApprovals } from './services/approvalPolicy';
 
 export type BotContext = Context;
 
@@ -297,10 +298,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     const candidates = mergeRequests.filter((mr) => {
       if (mr.isDraft) return false;
       const approvers = mr.approvedBy ?? [];
-      const nonLeadApprovers = approvers.filter(
-        (name) => !leadUsernamesLower.has(name.toLowerCase()),
-      );
-      return nonLeadApprovers.length >= 2;
+      return needsLeadReview(summarizeApprovals(approvers, leadUsernamesLower));
     });
 
     if (!candidates.length) {

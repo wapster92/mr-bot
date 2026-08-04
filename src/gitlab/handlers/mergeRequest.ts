@@ -15,7 +15,6 @@ import {
 } from '../../messages/templates';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
 import {
-  filterRecipientsWithoutApproval,
   getLeadRecipients,
   getRecipientByGitlabUsername,
 } from '../../messages/recipients';
@@ -38,6 +37,11 @@ import {
   runGameAction,
 } from '../../services/gameScoring';
 import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
+import {
+  hasRequiredMergeApprovals,
+  needsLeadReview,
+  summarizeApprovals,
+} from '../../services/approvalPolicy';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -422,7 +426,6 @@ const handleMergeRequestEventUnlocked = async (
   const approvers =
     doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
-  const approversCount = uniqueApprovers.length;
   if (doc.reviewers?.length && uniqueApprovers.length) {
     await markReviewCompletedForApprovers(
       { projectId: doc.projectId, iid: doc.iid },
@@ -435,22 +438,18 @@ const handleMergeRequestEventUnlocked = async (
     .map((lead) => lead.gitlabUsername)
     .filter(Boolean)
     .map((name) => name.toLowerCase());
-  const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
-  const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
-  const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
+  const approvalSummary = summarizeApprovals(
+    uniqueApprovers,
+    new Set(leadUsernames),
+  );
 
-  const approvalTriggered = nonLeadApprovers.length >= 2;
-  if (approvalTriggered && approversCount > 0 && !existingDoc?.finalReviewNotified) {
+  if (needsLeadReview(approvalSummary) && !existingDoc?.finalReviewNotified) {
     const message = buildFinalReviewMessage({
       title: doc.title ?? '—',
       url: doc.url ?? '—',
       taskUrl: doc.taskUrl,
     });
-    const recipients = filterRecipientsWithoutApproval(
-      await getLeadRecipients(),
-      uniqueApprovers,
-    );
-    await deliverHtmlMessageToRecipients(bot, recipients, message, {
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
       eventType: 'mr_final_review',
       projectId: doc.projectId,
       mrIid: doc.iid,
@@ -458,27 +457,28 @@ const handleMergeRequestEventUnlocked = async (
     await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
   }
 
-  if (!existingDoc?.authorMergeNotified && approversCount >= 3) {
-    if (leadApprovers.length >= 1 && nonLeadApprovers.length >= 2) {
-      const message = buildMergeReadyForAuthorMessage({
-        title: doc.title ?? '—',
-        url: doc.url ?? '—',
-        taskUrl: doc.taskUrl,
+  if (
+    !existingDoc?.authorMergeNotified &&
+    hasRequiredMergeApprovals(approvalSummary)
+  ) {
+    const message = buildMergeReadyForAuthorMessage({
+      title: doc.title ?? '—',
+      url: doc.url ?? '—',
+      taskUrl: doc.taskUrl,
+    });
+    const authorRecipient = doc.author.gitlabUsername
+      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
+      : undefined;
+    if (authorRecipient) {
+      await deliverHtmlMessage(bot, authorRecipient, message, {
+        eventType: 'mr_ready_to_merge',
+        projectId: doc.projectId,
+        mrIid: doc.iid,
       });
-      const authorRecipient = doc.author.gitlabUsername
-        ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
-        : undefined;
-      if (authorRecipient) {
-        await deliverHtmlMessage(bot, authorRecipient, message, {
-          eventType: 'mr_ready_to_merge',
-          projectId: doc.projectId,
-          mrIid: doc.iid,
-        });
-      } else {
-        console.warn('[merge-request] Cannot notify author about merge readiness');
-      }
-      await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
+    } else {
+      console.warn('[merge-request] Cannot notify author about merge readiness');
     }
+    await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
   }
 
   await runGameAction(`readiness ${doc.projectId}/${doc.iid}`, async () => {

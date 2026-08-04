@@ -16,7 +16,6 @@ import { persistGitlabUserProfiles } from '../gitlab/handlers/common';
 import { deliverHtmlMessageToRecipients, deliverHtmlMessage } from '../messages/send';
 import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../messages/templates';
 import {
-  filterRecipientsWithoutApproval,
   getLeadRecipients,
   getRecipientByGitlabUsername,
 } from '../messages/recipients';
@@ -28,6 +27,11 @@ import { reconcileReviewersForMr } from './reviewerAssignment';
 import { withMergeRequestLock } from './mergeRequestLock';
 import { runGameAction } from './gameScoring';
 import { syncMergeRequestGameReadiness } from './mergeReadiness';
+import {
+  hasRequiredMergeApprovals,
+  needsLeadReview,
+  summarizeApprovals,
+} from './approvalPolicy';
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
@@ -121,29 +125,23 @@ const maybeNotifyApprovals = async (
 ): Promise<void> => {
   const approvers = current.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
-  const approversCount = uniqueApprovers.length;
   const leads = await listLeadUsers();
   const leadUsernames = leads
     .map((lead) => lead.gitlabUsername)
     .filter(Boolean)
     .map((name) => name.toLowerCase());
-  const lowerApprovers = uniqueApprovers.map((name) => name.toLowerCase());
-  const leadApprovers = lowerApprovers.filter((name) => leadUsernames.includes(name));
-  const nonLeadApprovers = lowerApprovers.filter((name) => !leadUsernames.includes(name));
+  const approvalSummary = summarizeApprovals(
+    uniqueApprovers,
+    new Set(leadUsernames),
+  );
 
-  const approvalTriggered = nonLeadApprovers.length >= 2;
-
-  if (approvalTriggered && !existing.finalReviewNotified) {
+  if (needsLeadReview(approvalSummary) && !existing.finalReviewNotified) {
     const message = buildFinalReviewMessage({
       title: mr.title ?? '—',
       url: mr.url ?? '—',
       taskUrl: mr.taskUrl,
     });
-    const recipients = filterRecipientsWithoutApproval(
-      await getLeadRecipients(),
-      uniqueApprovers,
-    );
-    await deliverHtmlMessageToRecipients(bot, recipients, message, {
+    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
       eventType: 'mr_final_review',
       projectId: mr.projectId,
       mrIid: mr.iid,
@@ -151,27 +149,28 @@ const maybeNotifyApprovals = async (
     await updateMergeRequest(mr.projectId, mr.iid, { finalReviewNotified: true });
   }
 
-  if (!existing.authorMergeNotified && approversCount >= 3) {
-    if (leadApprovers.length >= 1 && nonLeadApprovers.length >= 2) {
-      const message = buildMergeReadyForAuthorMessage({
-        title: mr.title ?? '—',
-        url: mr.url ?? '—',
-        taskUrl: mr.taskUrl,
+  if (
+    !existing.authorMergeNotified &&
+    hasRequiredMergeApprovals(approvalSummary)
+  ) {
+    const message = buildMergeReadyForAuthorMessage({
+      title: mr.title ?? '—',
+      url: mr.url ?? '—',
+      taskUrl: mr.taskUrl,
+    });
+    const authorRecipient = mr.author?.gitlabUsername
+      ? await getRecipientByGitlabUsername(mr.author.gitlabUsername)
+      : undefined;
+    if (authorRecipient) {
+      await deliverHtmlMessage(bot, authorRecipient, message, {
+        eventType: 'mr_ready_to_merge',
+        projectId: mr.projectId,
+        mrIid: mr.iid,
       });
-      const authorRecipient = mr.author?.gitlabUsername
-        ? await getRecipientByGitlabUsername(mr.author.gitlabUsername)
-        : undefined;
-      if (authorRecipient) {
-        await deliverHtmlMessage(bot, authorRecipient, message, {
-          eventType: 'mr_ready_to_merge',
-          projectId: mr.projectId,
-          mrIid: mr.iid,
-        });
-      } else {
-        console.warn('[sync] Cannot notify author about merge readiness');
-      }
-      await updateMergeRequest(mr.projectId, mr.iid, { authorMergeNotified: true });
+    } else {
+      console.warn('[sync] Cannot notify author about merge readiness');
     }
+    await updateMergeRequest(mr.projectId, mr.iid, { authorMergeNotified: true });
   }
 };
 

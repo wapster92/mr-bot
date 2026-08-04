@@ -8,26 +8,27 @@ import {
   markNotificationDelivered,
   markNotificationError,
 } from '../data/notificationQueueRepository';
-import { getUserByGitlabUsername, getUserByTelegramUsername } from '../data/userStore';
 import {
-  hasGitlabUserApproved,
-  isWithinWorkingHours,
-} from '../messages/recipients';
+  getUserByGitlabUsername,
+  getUserByTelegramUsername,
+  listLeadUsers,
+} from '../data/userStore';
+import { isWithinWorkingHours } from '../messages/recipients';
 import { sendHtmlMessage } from '../messages/send';
+import { hasLeadApproval, summarizeApprovals } from './approvalPolicy';
 
 let flushInProgress = false;
 
-const recipientAlreadyApprovedFinalReview = async (
+const finalReviewAlreadyCompleted = async (
   item: {
     eventType?: string;
     mrKey?: string;
-    gitlabUsername?: string;
   },
+  leadUsernames: Set<string>,
 ): Promise<boolean> => {
   if (
     item.eventType !== 'mr_final_review' ||
-    !item.mrKey ||
-    !item.gitlabUsername
+    !item.mrKey
   ) {
     return false;
   }
@@ -38,7 +39,9 @@ const recipientAlreadyApprovedFinalReview = async (
     return false;
   }
   const mr = await findMergeRequest(projectId, iid);
-  return hasGitlabUserApproved(mr?.approvedBy ?? [], item.gitlabUsername);
+  return hasLeadApproval(
+    summarizeApprovals(mr?.approvedBy ?? [], leadUsernames),
+  );
 };
 
 export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise<void> => {
@@ -54,6 +57,10 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
     }
 
     const now = new Date();
+    const leads = await listLeadUsers();
+    const leadUsernames = new Set(
+      leads.map((lead) => lead.gitlabUsername.toLowerCase()),
+    );
     for (const item of queued) {
       const userRecord =
         (item.telegramUsername
@@ -72,11 +79,11 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
         continue;
       }
 
-      if (await recipientAlreadyApprovedFinalReview(item)) {
+      if (await finalReviewAlreadyCompleted(item, leadUsernames)) {
         if (item._id) {
           await markNotificationCancelled(
             item._id,
-            'Лид уже поставил approve этому MR',
+            'Финальная проверка уже выполнена другим лидом',
             now,
           );
         }
