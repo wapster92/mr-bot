@@ -1,9 +1,13 @@
 import { Context, Markup, Telegraf } from 'telegraf';
 import {
+  deleteManagedUser,
+  getManagedUserById,
   getReviewerByTelegramUsername,
   getUserByTelegramUsername,
   listLeadUsers,
+  listUsersForManagement,
   persistUserChatId,
+  setManagedUserActive,
   upsertAllowedUser,
 } from './data/userStore';
 import {
@@ -13,17 +17,20 @@ import {
 } from './data/mergeRequestRepository';
 import { incomingLogMiddleware } from './middleware/incomingLog';
 import { commandAuthMiddleware } from './middleware/auth';
+import { escapeHtml } from './messages/format';
 import { buildMergeRequestMessages } from './services/mrSummary';
 import { flushNotificationQueue } from './services/notificationQueue';
 import { listErroredNotifications } from './data/notificationQueueRepository';
 import { buildGameProfileMessage, buildGameTopMessage } from './services/gameStats';
 import { needsLeadReview, summarizeApprovals } from './services/approvalPolicy';
+import { syncOpenMergeRequests } from './services/mergeRequestSync';
+import { UserDeletionConfirmations } from './services/userDeletionConfirmation';
 
 export type BotContext = Context;
 
 const buildMainKeyboard = (isLead: boolean): ReturnType<typeof Markup.keyboard> => {
   const rows: string[][] = isLead
-    ? [['Мои MR', 'Все MR'], ['Финал']]
+    ? [['Мои MR', 'Все MR'], ['Финал', 'Пользователи']]
     : [['На ревью', 'Мои MR'], ['Все MR']];
   rows.push(['Мой профиль', 'Топ']);
   rows.push(['Помощь']);
@@ -51,6 +58,7 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
   if (user?.isLead) {
     commandLines.push(
       '/final — показать MR для финальной проверки',
+      '/users — приостановить, вернуть или удалить пользователя',
       '/allow — добавить пользователя в whitelist',
     );
   }
@@ -60,8 +68,59 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
   );
 };
 
+const buildUserManagementPanel = async (): Promise<{
+  text: string;
+  keyboard: ReturnType<typeof Markup.inlineKeyboard>;
+}> => {
+  const users = await listUsersForManagement();
+  const lines = [
+    '👥 <b>Управление пользователями</b>',
+    '',
+    '🏖 — временно исключить из назначений и уведомлений',
+    '▶️ — вернуть после отпуска',
+    '🗑 — удалить уволившегося пользователя',
+    '',
+  ];
+  const rows = users.map((user, index) => {
+    const position = index + 1;
+    const active = user.isActive !== false;
+    const role = user.isLead ? 'лид' : 'разработчик';
+    const telegram = user.telegramUsername
+      ? ` · Telegram: @${escapeHtml(user.telegramUsername)}`
+      : '';
+    lines.push(
+      `${position}. <b>${escapeHtml(user.name ?? user.gitlabUsername)}</b> — ` +
+        `${active ? '✅ работает' : '🏖 в отпуске'}, ${role}`,
+      `   GitLab: <code>${escapeHtml(user.gitlabUsername)}</code>${telegram}`,
+    );
+    const id = user._id.toHexString();
+    return [
+      Markup.button.callback(
+        `${active ? '🏖 В отпуск' : '▶️ Вернуть'} · ${position}`,
+        `users:${active ? 'pause' : 'resume'}:${id}`,
+      ),
+      Markup.button.callback(`🗑 Удалить · ${position}`, `users:delete:${id}`),
+    ];
+  });
+  if (!users.length) {
+    lines.push('Разрешённых пользователей пока нет.');
+  }
+  lines.push('', 'Добавление: <code>/allow @telegram gitlab.username Имя Фамилия</code>');
+  return {
+    text: lines.join('\n'),
+    keyboard: Markup.inlineKeyboard(rows),
+  };
+};
+
+const requestReviewerSynchronization = (): void => {
+  void syncOpenMergeRequests().catch((error) => {
+    console.warn('[user-management] Failed to start MR synchronization', error);
+  });
+};
+
 export const createBot = (token: string): Telegraf<BotContext> => {
   const bot = new Telegraf<BotContext>(token);
+  const userDeletionConfirmations = new UserDeletionConfirmations();
   const queueFlushIntervalMs = 60_000;
   setInterval(() => {
     void flushNotificationQueue(bot).catch((error) => {
@@ -163,6 +222,166 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       ...(name ? { name } : {}),
     });
     await ctx.reply(`Пользователь @${telegramUsername} добавлен в whitelist.`);
+  });
+
+  const sendUserManagementPanel = async (
+    ctx: BotContext,
+    editExisting = false,
+  ): Promise<void> => {
+    const panel = await buildUserManagementPanel();
+    const options = {
+      parse_mode: 'HTML' as const,
+      ...panel.keyboard,
+    };
+    if (editExisting) {
+      try {
+        await ctx.editMessageText(panel.text, options);
+        return;
+      } catch (error) {
+        console.warn('[user-management] Failed to update panel message', error);
+      }
+    }
+    await ctx.reply(panel.text, options);
+  };
+
+  const handleUsers = async (ctx: BotContext): Promise<void> => {
+    const actor = await getUserByTelegramUsername(ctx.from?.username);
+    if (!actor?.isLead) {
+      await ctx.reply('Команда доступна только лидам.');
+      return;
+    }
+    await sendUserManagementPanel(ctx);
+  };
+
+  bot.command('users', handleUsers);
+
+  bot.action(
+    /^users:(pause|resume|delete):([a-f\d]{24})$/,
+    async (ctx): Promise<void> => {
+      const actor = await getUserByTelegramUsername(ctx.from?.username);
+      if (!actor?.isLead) {
+        await ctx.answerCbQuery('Команда доступна только лидам.', {
+          show_alert: true,
+        });
+        return;
+      }
+
+      const action = ctx.match[1];
+      const userId = ctx.match[2];
+      if (!action || !userId) {
+        await ctx.answerCbQuery('Некорректное действие.', { show_alert: true });
+        return;
+      }
+      const target = await getManagedUserById(userId);
+      if (!target) {
+        await ctx.answerCbQuery('Пользователь уже удалён или недоступен.', {
+          show_alert: true,
+        });
+        await sendUserManagementPanel(ctx, true);
+        return;
+      }
+
+      if (action === 'delete') {
+        if (target.gitlabUsernameLower === actor.gitlabUsernameLower) {
+          await ctx.answerCbQuery('Нельзя удалить собственную учётную запись.', {
+            show_alert: true,
+          });
+          return;
+        }
+        const pending = userDeletionConfirmations.request(ctx.from.id, {
+          userId,
+          gitlabUsername: target.gitlabUsername,
+          displayName: target.name ?? target.gitlabUsername,
+        });
+        await ctx.answerCbQuery('Требуется подтверждение удаления.');
+        await ctx.reply(
+          [
+            `⚠️ Удаление <b>${escapeHtml(pending.displayName)}</b> необратимо.`,
+            'Скопируйте текст ниже и отправьте его боту отдельным сообщением:',
+            '',
+            `<code>${escapeHtml(pending.phrase)}</code>`,
+            '',
+            'Подтверждение действует 10 минут.',
+          ].join('\n'),
+          { parse_mode: 'HTML' },
+        );
+        return;
+      }
+
+      const isActive = action === 'resume';
+      if (!(await setManagedUserActive(userId, isActive))) {
+        await ctx.answerCbQuery('Не удалось изменить пользователя.', {
+          show_alert: true,
+        });
+        return;
+      }
+      console.info(
+        `[user-management] ${actor.gitlabUsername} ${isActive ? 'resumed' : 'paused'} ${target.gitlabUsername}`,
+      );
+      await ctx.answerCbQuery(
+        isActive ? 'Пользователь вернулся из отпуска.' : 'Пользователь приостановлен.',
+      );
+      await sendUserManagementPanel(ctx, true);
+      requestReviewerSynchronization();
+    },
+  );
+
+  bot.hears(/^УДАЛИТЬ(?:\s|$)/i, async (ctx): Promise<void> => {
+    const actor = await getUserByTelegramUsername(ctx.from?.username);
+    if (!actor?.isLead) {
+      await ctx.reply('Удалять пользователей могут только лиды.');
+      return;
+    }
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
+    const confirmation = userDeletionConfirmations.confirm(ctx.from.id, text);
+    if (confirmation.status === 'missing') {
+      await ctx.reply('Сначала выберите пользователя в разделе «Пользователи».');
+      return;
+    }
+    if (confirmation.status === 'expired') {
+      await ctx.reply('Подтверждение истекло. Нажмите «Удалить» ещё раз.');
+      return;
+    }
+    if (confirmation.status === 'mismatch') {
+      await ctx.reply(
+        [
+          'Текст не совпадает. Скопируйте подтверждение без изменений:',
+          `<code>${escapeHtml(confirmation.expectedPhrase)}</code>`,
+        ].join('\n'),
+        { parse_mode: 'HTML' },
+      );
+      return;
+    }
+
+    const target = await getManagedUserById(confirmation.target.userId);
+    if (!target) {
+      await ctx.reply('Пользователь уже удалён.');
+      return;
+    }
+    if (
+      target.gitlabUsernameLower !== confirmation.target.gitlabUsername.toLowerCase()
+    ) {
+      await ctx.reply('Пользователь изменился после запроса. Удаление отменено.');
+      return;
+    }
+    if (target.gitlabUsernameLower === actor.gitlabUsernameLower) {
+      await ctx.reply('Нельзя удалить собственную учётную запись.');
+      return;
+    }
+    if (!(await deleteManagedUser(confirmation.target.userId))) {
+      await ctx.reply('Не удалось удалить пользователя. Попробуйте ещё раз.');
+      return;
+    }
+    console.info(
+      `[user-management] ${actor.gitlabUsername} deleted ${target.gitlabUsername}`,
+    );
+    await ctx.reply(
+      `Пользователь <b>${escapeHtml(target.name ?? target.gitlabUsername)}</b> удалён. ` +
+        'История XP сохранена.',
+      { parse_mode: 'HTML' },
+    );
+    requestReviewerSynchronization();
+    await sendUserManagementPanel(ctx);
   });
 
   bot.command('whoami', async (ctx) => {
@@ -323,6 +542,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.hears('Мой профиль', handleGameProfile);
   bot.hears('Топ', (ctx) => handleGameTop(ctx));
   bot.hears('Финал', handleFinal);
+  bot.hears('Пользователи', handleUsers);
   bot.hears('Помощь', helpCommand);
 
   bot.command('queue_errors', async (ctx) => {

@@ -35,6 +35,7 @@ import {
 
 const SYNC_INTERVAL_MS = 60 * 60 * 1000;
 let syncRunning = false;
+let syncRequested = false;
 let syncTimer: NodeJS.Timeout | undefined;
 let syncBot: Telegraf<BotContext> | undefined;
 
@@ -182,6 +183,7 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
     return;
   }
   if (syncRunning) {
+    syncRequested = true;
     return;
   }
   syncRunning = true;
@@ -434,6 +436,10 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
     console.warn('[sync] Failed to sync open merge requests', error);
   } finally {
     syncRunning = false;
+    if (syncRequested) {
+      syncRequested = false;
+      void syncOpenMergeRequests();
+    }
   }
 };
 

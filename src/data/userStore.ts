@@ -1,4 +1,5 @@
-import type { Collection } from 'mongodb';
+import { ObjectId } from 'mongodb';
+import type { Collection, WithId } from 'mongodb';
 import { getDb } from '../db/mongo';
 import { createDefaultWorkHours } from './userTypes';
 import type { UserRecord } from './userTypes';
@@ -11,6 +12,9 @@ export type UserDocument = UserRecord & {
 const COLLECTION_NAME = 'users';
 
 const normalizeUsername = (username: string): string => username.toLowerCase();
+
+const parseObjectId = (id: string): ObjectId | undefined =>
+  /^[a-f\d]{24}$/i.test(id) ? new ObjectId(id) : undefined;
 
 let collectionInitialization: Promise<Collection<UserDocument>> | undefined;
 
@@ -103,6 +107,51 @@ export const listActiveReviewers = async (): Promise<string[]> => {
     .project({ gitlabUsername: 1 })
     .toArray();
   return docs.map((doc) => doc.gitlabUsername).filter(Boolean);
+};
+
+export const listUsersForManagement = async (): Promise<WithId<UserDocument>[]> => {
+  const collection = await getCollection();
+  return collection
+    .find({ isAllowed: true })
+    .sort({ isLead: -1, name: 1, gitlabUsernameLower: 1 })
+    .toArray();
+};
+
+export const getManagedUserById = async (
+  id: string,
+): Promise<WithId<UserDocument> | undefined> => {
+  const objectId = parseObjectId(id);
+  if (!objectId) {
+    return undefined;
+  }
+  const collection = await getCollection();
+  return (await collection.findOne({ _id: objectId, isAllowed: true })) ?? undefined;
+};
+
+export const setManagedUserActive = async (
+  id: string,
+  isActive: boolean,
+): Promise<boolean> => {
+  const objectId = parseObjectId(id);
+  if (!objectId) {
+    return false;
+  }
+  const collection = await getCollection();
+  const result = await collection.updateOne(
+    { _id: objectId, isAllowed: true },
+    { $set: { isActive, updatedAt: new Date() } },
+  );
+  return result.matchedCount === 1;
+};
+
+export const deleteManagedUser = async (id: string): Promise<boolean> => {
+  const objectId = parseObjectId(id);
+  if (!objectId) {
+    return false;
+  }
+  const collection = await getCollection();
+  const result = await collection.deleteOne({ _id: objectId, isAllowed: true });
+  return result.deletedCount === 1;
 };
 
 export const persistUserChatId = async (
