@@ -43,6 +43,9 @@ const parseUsers = (raw) => {
       isAllowed: item.isAllowed !== false,
       ...(typeof item.isActive === 'boolean' ? { isActive: item.isActive } : { isActive: true }),
       ...(typeof item.isLead === 'boolean' ? { isLead: item.isLead } : {}),
+      ...(typeof item.isReviewer === 'boolean'
+        ? { isReviewer: item.isReviewer }
+        : { isReviewer: true }),
       workHours: {
         start: item.workHours?.start || DEFAULT_WORK_HOURS.start,
         end: item.workHours?.end || DEFAULT_WORK_HOURS.end,

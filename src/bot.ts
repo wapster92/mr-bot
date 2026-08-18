@@ -4,12 +4,15 @@ import {
   getManagedUserById,
   getReviewerByTelegramUsername,
   getUserByTelegramUsername,
+  listActiveReviewers,
   listLeadUsers,
   listUsersForManagement,
   persistUserChatId,
   setManagedUserActive,
+  setManagedUserReviewer,
   upsertAllowedUser,
 } from './data/userStore';
+import { refreshQueue } from './data/reviewerQueue';
 import {
   listActiveMergeRequests,
   listActiveMergeRequestsByAuthor,
@@ -28,10 +31,15 @@ import { UserDeletionConfirmations } from './services/userDeletionConfirmation';
 
 export type BotContext = Context;
 
-const buildMainKeyboard = (isLead: boolean): ReturnType<typeof Markup.keyboard> => {
+const buildMainKeyboard = (
+  isLead: boolean,
+  isReviewer = true,
+): ReturnType<typeof Markup.keyboard> => {
   const rows: string[][] = isLead
     ? [['Мои MR', 'Все MR'], ['Финал', 'Пользователи']]
-    : [['На ревью', 'Мои MR'], ['Все MR']];
+    : isReviewer
+    ? [['На ревью', 'Мои MR'], ['Все MR']]
+    : [['Мои MR', 'Все MR']];
   rows.push(['Мой профиль', 'Топ']);
   rows.push(['Помощь']);
   return Markup.keyboard(rows).resize();
@@ -44,7 +52,7 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
     '/help — показать эту подсказку',
     '/status — базовая проверка доступности бота',
   ];
-  if (!user?.isLead) {
+  if (user && !user.isLead && user.isReviewer !== false) {
     commandLines.push('/review — показать MR, где нужен твой ревью');
   }
   commandLines.push(
@@ -58,13 +66,13 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
   if (user?.isLead) {
     commandLines.push(
       '/final — показать MR для финальной проверки',
-      '/users — приостановить, вернуть или удалить пользователя',
+      '/users — управлять доступностью и участием пользователей в ревью',
       '/allow — добавить пользователя в whitelist',
     );
   }
   return ctx.reply(
     commandLines.join('\n'),
-    buildMainKeyboard(Boolean(user?.isLead)),
+    buildMainKeyboard(Boolean(user?.isLead), user?.isReviewer !== false),
   );
 };
 
@@ -78,13 +86,17 @@ const buildUserManagementPanel = async (): Promise<{
     '',
     '🏖 — временно исключить из назначений и уведомлений',
     '▶️ — вернуть после отпуска',
+    '🎯 — включить или исключить разработчика из очереди ревьюеров',
     '🗑 — удалить уволившегося пользователя',
     '',
   ];
   const rows = users.map((user, index) => {
     const position = index + 1;
     const active = user.isActive !== false;
-    const role = user.isLead ? 'лид' : 'разработчик';
+    const reviewerEnabled = user.isReviewer !== false;
+    const role = user.isLead
+      ? 'лид'
+      : `разработчик, ${reviewerEnabled ? 'участвует в ревью' : 'без назначений на ревью'}`;
     const telegram = user.telegramUsername
       ? ` · Telegram: @${escapeHtml(user.telegramUsername)}`
       : '';
@@ -94,18 +106,33 @@ const buildUserManagementPanel = async (): Promise<{
       `   GitLab: <code>${escapeHtml(user.gitlabUsername)}</code>${telegram}`,
     );
     const id = user._id.toHexString();
-    return [
+    const buttons = [
       Markup.button.callback(
         `${active ? '🏖 В отпуск' : '▶️ Вернуть'} · ${position}`,
         `users:${active ? 'pause' : 'resume'}:${id}`,
       ),
-      Markup.button.callback(`🗑 Удалить · ${position}`, `users:delete:${id}`),
     ];
+    if (!user.isLead) {
+      buttons.push(
+        Markup.button.callback(
+          `${reviewerEnabled ? '🚫 Не назначать' : '🎯 Назначать'} · ${position}`,
+          `users:${reviewerEnabled ? 'review-off' : 'review-on'}:${id}`,
+        ),
+      );
+    }
+    buttons.push(
+      Markup.button.callback(`🗑 Удалить · ${position}`, `users:delete:${id}`),
+    );
+    return buttons;
   });
   if (!users.length) {
     lines.push('Разрешённых пользователей пока нет.');
   }
-  lines.push('', 'Добавление: <code>/allow @telegram gitlab.username Имя Фамилия</code>');
+  lines.push(
+    '',
+    'Добавление: <code>/allow @telegram gitlab.username Имя Фамилия</code>',
+    'Без ревью: <code>/allow @telegram gitlab.username --no-review Имя Фамилия</code>',
+  );
   return {
     text: lines.join('\n'),
     keyboard: Markup.inlineKeyboard(rows),
@@ -149,7 +176,10 @@ export const createBot = (token: string): Telegraf<BotContext> => {
         await persistUserChatId(telegramUser.id, ctx.chat.id, telegramUser.username);
         await ctx.reply(
           'Привет! Я запомнил этот чат 📝. Введи /help, чтобы увидеть команды.',
-          buildMainKeyboard(Boolean(allowedUser.isLead)),
+          buildMainKeyboard(
+            Boolean(allowedUser.isLead),
+            allowedUser.isReviewer !== false,
+          ),
         );
       } catch (error) {
         console.error('Failed to persist chat id', error);
@@ -202,14 +232,18 @@ export const createBot = (token: string): Telegraf<BotContext> => {
     const text = ctx.message && 'text' in ctx.message ? ctx.message.text : '';
     const parts = text.split(' ').filter(Boolean);
     if (parts.length < 3) {
-      await ctx.reply('Формат: /allow @telegramUsername gitlab.username [Имя Фамилия]');
+      await ctx.reply(
+        'Формат: /allow @telegramUsername gitlab.username [--no-review] [Имя Фамилия]',
+      );
       return;
     }
 
     const telegramRaw = parts[1] ?? '';
     const gitlabUsername = parts[2];
     const telegramUsername = telegramRaw.startsWith('@') ? telegramRaw.slice(1) : telegramRaw;
-    const name = parts.slice(3).join(' ') || undefined;
+    const profileParts = parts.slice(3);
+    const withoutReview = profileParts.includes('--no-review');
+    const name = profileParts.filter((part) => part !== '--no-review').join(' ') || undefined;
 
     if (!telegramUsername || !gitlabUsername) {
       await ctx.reply('Нужны @telegramUsername и gitlab.username.');
@@ -220,8 +254,12 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       telegramUsername,
       gitlabUsername,
       ...(name ? { name } : {}),
+      ...(withoutReview ? { isReviewer: false } : {}),
     });
-    await ctx.reply(`Пользователь @${telegramUsername} добавлен в whitelist.`);
+    await ctx.reply(
+      `Пользователь @${telegramUsername} добавлен в whitelist` +
+        `${withoutReview ? ' без назначений на ревью' : ''}.`,
+    );
   });
 
   const sendUserManagementPanel = async (
@@ -256,7 +294,7 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.command('users', handleUsers);
 
   bot.action(
-    /^users:(pause|resume|delete):([a-f\d]{24})$/,
+    /^users:(pause|resume|review-on|review-off|delete):([a-f\d]{24})$/,
     async (ctx): Promise<void> => {
       const actor = await getUserByTelegramUsername(ctx.from?.username);
       if (!actor?.isLead) {
@@ -305,6 +343,40 @@ export const createBot = (token: string): Telegraf<BotContext> => {
           ].join('\n'),
           { parse_mode: 'HTML' },
         );
+        return;
+      }
+
+      if (action === 'review-on' || action === 'review-off') {
+        if (target.isLead) {
+          await ctx.answerCbQuery('Лиды не участвуют в очереди ревьюеров.', {
+            show_alert: true,
+          });
+          return;
+        }
+        const isReviewer = action === 'review-on';
+        if (!(await setManagedUserReviewer(userId, isReviewer))) {
+          await ctx.answerCbQuery('Не удалось изменить участие в ревью.', {
+            show_alert: true,
+          });
+          return;
+        }
+        console.info(
+          `[user-management] ${actor.gitlabUsername} ` +
+            `${isReviewer ? 'enabled reviews for' : 'disabled reviews for'} ` +
+            target.gitlabUsername,
+        );
+        await ctx.answerCbQuery(
+          isReviewer
+            ? 'Пользователь добавлен в очередь ревьюеров.'
+            : 'Пользователь исключён из очереди ревьюеров.',
+        );
+        await sendUserManagementPanel(ctx, true);
+        try {
+          await refreshQueue();
+        } catch (error) {
+          console.warn('[user-management] Failed to refresh reviewer queue', error);
+        }
+        requestReviewerSynchronization();
         return;
       }
 
@@ -509,15 +581,23 @@ export const createBot = (token: string): Telegraf<BotContext> => {
       return;
     }
 
-    const leads = await listLeadUsers();
+    const [leads, reviewers] = await Promise.all([
+      listLeadUsers(),
+      listActiveReviewers(),
+    ]);
     const leadUsernamesLower = new Set(
       leads.map((lead) => (lead.gitlabUsername ?? '').toLowerCase()).filter(Boolean),
+    );
+    const reviewerUsernamesLower = new Set(
+      reviewers.map((reviewer) => reviewer.toLowerCase()),
     );
 
     const candidates = mergeRequests.filter((mr) => {
       if (mr.isDraft) return false;
       const approvers = mr.approvedBy ?? [];
-      return needsLeadReview(summarizeApprovals(approvers, leadUsernamesLower));
+      return needsLeadReview(
+        summarizeApprovals(approvers, leadUsernamesLower, reviewerUsernamesLower),
+      );
     });
 
     if (!candidates.length) {

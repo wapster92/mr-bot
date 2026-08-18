@@ -10,6 +10,7 @@ import {
   releaseReviewReminderClaim,
 } from '../data/reviewReminderRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
+import { isReviewerEnabled } from '../data/userTypes';
 import { formatGitlabUserLabel } from '../messages/format';
 import { getLeadRecipients, isWithinWorkingHours, getRecipientByGitlabUsername } from '../messages/recipients';
 import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../messages/send';
@@ -58,7 +59,7 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
         }
 
         const reviewer = await getUserByGitlabUsername(reminder.reviewerUsername);
-        if (!reviewer || reviewer.isAllowed === false || reviewer.isActive === false) {
+        if (!reviewer || !isReviewerEnabled(reviewer)) {
           await markReminderInactive(reminder.projectId, reminder.iid, reminder.reviewerUsername);
           continue;
         }

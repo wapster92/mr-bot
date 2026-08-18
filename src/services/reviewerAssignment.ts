@@ -1,6 +1,7 @@
 import { pullReviewers } from '../data/reviewerQueue';
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
+import { isReviewerEnabled } from '../data/userTypes';
 import {
   buildReviewerLabels,
   syncReviewerLabelsToGitlab,
@@ -30,7 +31,7 @@ const filterAvailableReviewers = async (reviewers: string[]): Promise<string[]> 
   const available: string[] = [];
   for (const reviewer of uniqueUsernames(reviewers)) {
     const user = await getUserByGitlabUsername(reviewer);
-    if (user && user.isActive !== false) {
+    if (user && isReviewerEnabled(user)) {
       available.push(reviewer);
     }
   }

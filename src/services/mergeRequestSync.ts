@@ -21,7 +21,7 @@ import {
 } from '../messages/recipients';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
-import { listLeadUsers } from '../data/userStore';
+import { listActiveReviewers, listLeadUsers } from '../data/userStore';
 import { markReviewCompletedForApprovers, syncReviewRemindersForMr } from './reviewReminderService';
 import { reconcileReviewersForMr } from './reviewerAssignment';
 import { withMergeRequestLock } from './mergeRequestLock';
@@ -126,14 +126,19 @@ const maybeNotifyApprovals = async (
 ): Promise<void> => {
   const approvers = current.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
-  const leads = await listLeadUsers();
+  const [leads, reviewers] = await Promise.all([
+    listLeadUsers(),
+    listActiveReviewers(),
+  ]);
   const leadUsernames = leads
     .map((lead) => lead.gitlabUsername)
     .filter(Boolean)
     .map((name) => name.toLowerCase());
+  const reviewerUsernames = reviewers.map((name) => name.toLowerCase());
   const approvalSummary = summarizeApprovals(
     uniqueApprovers,
     new Set(leadUsernames),
+    new Set(reviewerUsernames),
   );
 
   if (needsLeadReview(approvalSummary) && !existing.finalReviewNotified) {

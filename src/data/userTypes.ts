@@ -24,6 +24,15 @@ export type UserRecord = {
   isAllowed?: boolean;
   isActive?: boolean;
   isLead?: boolean;
+  isReviewer?: boolean;
   workHours?: WorkHours;
   ignoreWorkHours?: boolean;
 };
+
+export const isReviewerEnabled = (
+  user: Pick<UserRecord, 'isAllowed' | 'isActive' | 'isLead' | 'isReviewer'>,
+): boolean =>
+  user.isAllowed !== false &&
+  user.isActive !== false &&
+  user.isLead !== true &&
+  user.isReviewer !== false;

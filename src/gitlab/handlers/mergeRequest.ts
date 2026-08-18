@@ -5,7 +5,11 @@ import {
   updateMergeRequest,
   clearMergeRequestGameReady,
 } from '../../data/mergeRequestRepository';
-import { getUserByGitlabUsername, listLeadUsers } from '../../data/userStore';
+import {
+  getUserByGitlabUsername,
+  listActiveReviewers,
+  listLeadUsers,
+} from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
 import {
   buildFinalReviewMessage,
@@ -433,14 +437,19 @@ const handleMergeRequestEventUnlocked = async (
       uniqueApprovers,
     );
   }
-  const leads = await listLeadUsers();
+  const [leads, reviewers] = await Promise.all([
+    listLeadUsers(),
+    listActiveReviewers(),
+  ]);
   const leadUsernames = leads
     .map((lead) => lead.gitlabUsername)
     .filter(Boolean)
     .map((name) => name.toLowerCase());
+  const reviewerUsernames = reviewers.map((name) => name.toLowerCase());
   const approvalSummary = summarizeApprovals(
     uniqueApprovers,
     new Set(leadUsernames),
+    new Set(reviewerUsernames),
   );
 
   if (needsLeadReview(approvalSummary) && !existingDoc?.finalReviewNotified) {

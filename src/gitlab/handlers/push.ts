@@ -8,7 +8,7 @@ import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildPushUpdateMessage } from '../../messages/templates';
 import { deliverHtmlMessage } from '../../messages/send';
-import { getRecipientByGitlabUsername } from '../../messages/recipients';
+import { getReviewerRecipientByGitlabUsername } from '../../messages/recipients';
 import { recordAuthorChangesScore, runGameAction } from '../../services/gameScoring';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
 
@@ -66,7 +66,7 @@ const handlePushEventUnlocked = async (
       : undefined;
 
   for (const reviewer of doc.reviewers) {
-    const reviewerRecipient = await getRecipientByGitlabUsername(reviewer);
+    const reviewerRecipient = await getReviewerRecipientByGitlabUsername(reviewer);
     if (!reviewerRecipient) {
       continue;
     }

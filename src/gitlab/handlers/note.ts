@@ -4,7 +4,11 @@ import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildMergeRequestCommentMessage } from '../../messages/templates';
 import { deliverHtmlMessageToRecipients } from '../../messages/send';
-import { getLeadRecipients, getRecipientByGitlabUsername } from '../../messages/recipients';
+import {
+  getLeadRecipients,
+  getRecipientByGitlabUsername,
+  type DeliveryRecipient,
+} from '../../messages/recipients';
 import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
 import { recordReviewCommentScore, runGameAction } from '../../services/gameScoring';
 
@@ -15,6 +19,14 @@ const parseDate = (value?: string): Date => {
   const date = new Date(value);
   return Number.isNaN(date.getTime()) ? new Date() : date;
 };
+
+export const buildCommentRecipients = (
+  authorRecipient: DeliveryRecipient | undefined,
+  leadRecipients: DeliveryRecipient[],
+): DeliveryRecipient[] => [
+  ...(authorRecipient ? [authorRecipient] : []),
+  ...leadRecipients,
+];
 
 export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
@@ -81,7 +93,6 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
   const authorRecipient = await getRecipientByGitlabUsername(authorGitlab);
   if (!authorRecipient) {
     console.warn('[note] No Telegram mapping for MR author', authorGitlab);
-    return;
   }
 
   const noteText = noteAttributes.note ?? '';
@@ -94,7 +105,10 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     commenterName,
     noteText,
   });
-  const recipients = [authorRecipient, ...(await getLeadRecipients())];
+  const recipients = buildCommentRecipients(
+    authorRecipient,
+    await getLeadRecipients(),
+  );
   await deliverHtmlMessageToRecipients(bot, recipients, message, {
     eventType: 'mr_comment',
     projectId: doc.projectId,

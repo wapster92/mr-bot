@@ -30,6 +30,10 @@ const initializeCollection = async (): Promise<Collection<UserDocument>> => {
     { workHours: { $exists: false } },
     { $set: { workHours: createDefaultWorkHours() } },
   );
+  await collection.updateMany(
+    { isReviewer: { $exists: false }, isLead: { $ne: true } },
+    { $set: { isReviewer: true } },
+  );
   return collection;
 };
 
@@ -71,6 +75,8 @@ export const getReviewerByTelegramUsername = async (
       gitlabUsername: { $type: 'string' },
       isAllowed: true,
       isActive: { $ne: false },
+      isLead: { $ne: true },
+      isReviewer: { $ne: false },
     })) ?? undefined
   );
 };
@@ -102,6 +108,7 @@ export const listActiveReviewers = async (): Promise<string[]> => {
       isAllowed: true,
       isLead: { $ne: true },
       isActive: { $ne: false },
+      isReviewer: { $ne: false },
       gitlabUsername: { $type: 'string' },
     })
     .project({ gitlabUsername: 1 })
@@ -144,6 +151,22 @@ export const setManagedUserActive = async (
   return result.matchedCount === 1;
 };
 
+export const setManagedUserReviewer = async (
+  id: string,
+  isReviewer: boolean,
+): Promise<boolean> => {
+  const objectId = parseObjectId(id);
+  if (!objectId) {
+    return false;
+  }
+  const collection = await getCollection();
+  const result = await collection.updateOne(
+    { _id: objectId, isAllowed: true, isLead: { $ne: true } },
+    { $set: { isReviewer, updatedAt: new Date() } },
+  );
+  return result.matchedCount === 1;
+};
+
 export const deleteManagedUser = async (id: string): Promise<boolean> => {
   const objectId = parseObjectId(id);
   if (!objectId) {
@@ -181,8 +204,17 @@ export const upsertAllowedUser = async (input: {
   telegramUsername: string;
   gitlabUsername: string;
   name?: string;
+  isReviewer?: boolean;
 }): Promise<void> => {
   const collection = await getCollection();
+  const reviewerSet =
+    typeof input.isReviewer === 'boolean'
+      ? { isReviewer: input.isReviewer }
+      : {};
+  const reviewerInsert =
+    typeof input.isReviewer === 'boolean'
+      ? {}
+      : { isReviewer: true };
   await collection.updateOne(
     { gitlabUsernameLower: normalizeUsername(input.gitlabUsername) },
     {
@@ -192,12 +224,14 @@ export const upsertAllowedUser = async (input: {
         telegramUsername: input.telegramUsername,
         telegramUsernameLower: normalizeUsername(input.telegramUsername),
         ...(input.name ? { name: input.name } : {}),
+        ...reviewerSet,
         isAllowed: true,
         updatedAt: new Date(),
       },
       $setOnInsert: {
         isActive: true,
         isLead: false,
+        ...reviewerInsert,
         workHours: createDefaultWorkHours(),
         createdAt: new Date(),
       },

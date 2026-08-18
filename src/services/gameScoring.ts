@@ -11,6 +11,7 @@ import {
   hasScoreEvent,
 } from '../data/scoreEventRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
+import { isReviewerEnabled } from '../data/userTypes';
 import {
   addWorkingMinutes,
   getWorkdayMinutes,
@@ -60,6 +61,11 @@ const isScoringUserAvailable = async (username: string): Promise<boolean> => {
   return Boolean(user && user.isActive !== false);
 };
 
+const isScoringReviewerAvailable = async (username: string): Promise<boolean> => {
+  const user = await getUserByGitlabUsername(username);
+  return Boolean(user && isReviewerEnabled(user));
+};
+
 const getTrackingStart = (reminder: ReviewReminderDocument): Date => {
   const gameStartedAt = reminder.gameStartedAt ?? reminder.assignedAt;
   return gameStartedAt > reminder.assignedAt ? gameStartedAt : reminder.assignedAt;
@@ -94,7 +100,7 @@ const recordReviewerResponse = async (
   occurredAt: Date,
 ): Promise<void> => {
   const user = await getUserByGitlabUsername(reminder.reviewerUsername);
-  if (!user || user.isActive === false) {
+  if (!user || !isReviewerEnabled(user)) {
     return;
   }
   const assignmentKey = buildReviewAssignmentKey(reminder);
@@ -129,7 +135,7 @@ export const recordReviewCommentScore = async (input: {
 }): Promise<void> => {
   const lockKey = `comment:${input.mr.projectId}:${input.mr.iid}:${input.reviewerUsername.toLowerCase()}`;
   await withScoreLock(lockKey, async () => {
-    if (!(await isScoringUserAvailable(input.reviewerUsername))) {
+    if (!(await isScoringReviewerAvailable(input.reviewerUsername))) {
       return;
     }
     const reminder = await getReviewReminder(
@@ -188,7 +194,7 @@ export const recordReviewApprovalScore = async (input: {
 }): Promise<void> => {
   if (
     input.mr.author.gitlabUsername?.toLowerCase() === input.username.toLowerCase() ||
-    !(await isScoringUserAvailable(input.username))
+    !(await isScoringReviewerAvailable(input.username))
   ) {
     return;
   }
@@ -248,7 +254,10 @@ export const recordReviewOverdueScore = async (
   reminder: ReviewReminderDocument,
   overdueAt: Date,
 ): Promise<void> => {
-  if (!reminder.gameStartedAt || !(await isScoringUserAvailable(reminder.reviewerUsername))) {
+  if (
+    !reminder.gameStartedAt ||
+    !(await isScoringReviewerAvailable(reminder.reviewerUsername))
+  ) {
     return;
   }
   const assignmentKey = buildReviewAssignmentKey(reminder);

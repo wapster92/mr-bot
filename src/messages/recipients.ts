@@ -1,5 +1,5 @@
 import { getChatIdByUsername, listLeadUsers, getUserByGitlabUsername } from '../data/userStore';
-import type { UserRecord } from '../data/userTypes';
+import { isReviewerEnabled, type UserRecord } from '../data/userTypes';
 import { isWithinWorkingHours } from '../services/workingHours';
 
 export { isWithinWorkingHours } from '../services/workingHours';
@@ -76,6 +76,16 @@ export const getRecipientByGitlabUsername = async (
 ): Promise<DeliveryRecipient | undefined> => {
   const userRecord = await getUserByGitlabUsername(gitlabUsername);
   if (!userRecord) {
+    return undefined;
+  }
+  return toRecipient(userRecord, new Date());
+};
+
+export const getReviewerRecipientByGitlabUsername = async (
+  gitlabUsername: string,
+): Promise<DeliveryRecipient | undefined> => {
+  const userRecord = await getUserByGitlabUsername(gitlabUsername);
+  if (!userRecord || !isReviewerEnabled(userRecord)) {
     return undefined;
   }
   return toRecipient(userRecord, new Date());

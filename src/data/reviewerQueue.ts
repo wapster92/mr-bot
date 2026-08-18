@@ -19,7 +19,22 @@ const baseReviewerList = async (): Promise<string[]> => {
   return listActiveReviewers();
 };
 
-export const refreshQueue = async (): Promise<string[]> => {
+const withQueueOperation = async <T>(task: () => Promise<T>): Promise<T> => {
+  const previous = queueOperation;
+  let release = (): void => {};
+  queueOperation = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+
+  await previous.catch(() => {});
+  try {
+    return await task();
+  } finally {
+    release();
+  }
+};
+
+const refreshQueueUnlocked = async (): Promise<string[]> => {
   const queue = await baseReviewerList();
   const collection = await getCollection();
   await collection.updateOne(
@@ -30,16 +45,19 @@ export const refreshQueue = async (): Promise<string[]> => {
   return queue;
 };
 
-export const fetchQueue = async (): Promise<string[]> => {
+export const refreshQueue = async (): Promise<string[]> =>
+  withQueueOperation(refreshQueueUnlocked);
+
+const fetchQueue = async (): Promise<string[]> => {
   const collection = await getCollection();
   const doc = await collection.findOne({});
   if (!doc || !doc.queue?.length) {
-    return refreshQueue();
+    return refreshQueueUnlocked();
   }
   return doc.queue;
 };
 
-export const saveQueue = async (queue: string[]): Promise<void> => {
+const saveQueue = async (queue: string[]): Promise<void> => {
   const collection = await getCollection();
   await collection.updateOne(
     {},
@@ -62,7 +80,7 @@ const pullReviewersUnlocked = async (exclude: string[]): Promise<string[]> => {
       if (refreshed) {
         break;
       }
-      queue = await refreshQueue();
+      queue = await refreshQueueUnlocked();
       refreshed = true;
     }
 
@@ -89,16 +107,5 @@ const pullReviewersUnlocked = async (exclude: string[]): Promise<string[]> => {
 };
 
 export const pullReviewers = async (exclude: string[]): Promise<string[]> => {
-  const previous = queueOperation;
-  let release = (): void => {};
-  queueOperation = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-
-  await previous.catch(() => {});
-  try {
-    return await pullReviewersUnlocked(exclude);
-  } finally {
-    release();
-  }
+  return withQueueOperation(() => pullReviewersUnlocked(exclude));
 };

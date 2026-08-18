@@ -39,4 +39,14 @@ describe('approval policy', () => {
     assert.equal(needsLeadReview(summary), false);
     assert.equal(hasRequiredMergeApprovals(summary), false);
   });
+
+  it('does not count an approve from a user excluded from reviews', () => {
+    const summary = summarizeApprovals(
+      ['author.only', 'tech.lead'],
+      leads,
+      new Set(['developer.one']),
+    );
+    assert.equal(needsLeadReview(summary), false);
+    assert.equal(hasRequiredMergeApprovals(summary), false);
+  });
 });
