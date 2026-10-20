@@ -1,45 +1,36 @@
-import {
-  upsertMergeRequest,
-  type MergeRequestDocument,
-  findMergeRequest,
-  clearMergeRequestGameReady,
-} from '../../data/mergeRequestRepository';
-import { getUserByGitlabUsername } from '../../data/userStore';
-import { formatGitlabUserLabel } from '../../messages/format';
-import {
-  buildMergeRequestClosedMessage,
-  buildMergeRequestCreatedMessage,
-  buildMergeApprovalAlertMessage,
-  buildMergeApprovalWarningForMergerMessage,
-} from '../../messages/templates';
-import { deliverHtmlMessageToRecipients } from '../../messages/send';
-import {
-  getLeadRecipients,
-  getRecipientByGitlabUsername,
-} from '../../messages/recipients';
-import { persistGitlabUserProfileFromPayload, persistGitlabUserProfiles } from './common';
-import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { config } from '../../config';
+import {
+  clearMergeRequestGameReady,
+  findMergeRequest,
+  upsertMergeRequest,
+  type MergeRequestDocument,
+} from '../../data/mergeRequestRepository';
+import { getUserByGitlabUsername } from '../../data/userStore';
+import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
+import { recordMergedMrScore, runGameAction } from '../../services/gameScoring';
+import { auditMergeApprovals } from '../../services/mergeApprovalAudit';
+import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
+import {
+  recordMergeRequestApprovalEvent,
+  resolveMergeRequestApprovals,
+} from '../../services/mergeRequestApprovalEvents';
+import {
+  notifyMergeRequestClosed,
+  notifyMergeRequestCreated,
+} from '../../services/mergeRequestLifecycleNotifications';
+import { withMergeRequestLock } from '../../services/mergeRequestLock';
+import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
+import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
 import {
   markAllRemindersInactiveForMr,
   markReviewCompletedForApprovers,
   syncReviewRemindersForMr,
 } from '../../services/reviewReminderService';
 import { reconcileReviewersForMr } from '../../services/reviewerAssignment';
-import { withMergeRequestLock } from '../../services/mergeRequestLock';
-import {
-  recordMergedMrScore,
-  recordReviewApprovalScore,
-  recordReviewUnapprovalScore,
-  runGameAction,
-} from '../../services/gameScoring';
-import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
-import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
-import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
-import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
-import { auditMergeApprovals } from '../../services/mergeApprovalAudit';
+import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
+import { persistGitlabUserProfileFromPayload, persistGitlabUserProfiles } from './common';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -182,66 +173,6 @@ const handleMergeRequestEventUnlocked = async (
     doc.detailedMergeStatus = attrs.detailed_merge_status;
   }
 
-  if (apiApprovals) {
-    if (typeof apiApprovals.approvals_required === 'number') {
-      doc.approvalsRequired = apiApprovals.approvals_required;
-    }
-    if (typeof apiApprovals.approvals_left === 'number') {
-      doc.approvalsLeft = apiApprovals.approvals_left;
-    }
-    doc.approvedBy = Array.isArray(apiApprovals.approved_by)
-      ? (apiApprovals.approved_by
-          .map((item) => item.user?.username)
-          .filter(Boolean) as string[])
-      : [];
-  }
-
-  if (!apiApprovals) {
-    if (typeof attrs.approvals_required === 'number') {
-      doc.approvalsRequired = attrs.approvals_required;
-    }
-    if (typeof attrs.approvals_left === 'number') {
-      doc.approvalsLeft = attrs.approvals_left;
-    }
-  }
-  if (doc.approvalsRequired === undefined) {
-    const fallbackRequired =
-      existingDoc?.approvalsRequired ?? config.approvals.defaultRequired;
-    if (Number.isFinite(fallbackRequired)) {
-      doc.approvalsRequired = fallbackRequired;
-    }
-  }
-  if (
-    doc.approvalsLeft === undefined ||
-    doc.approvalsLeft === null ||
-    typeof doc.approvalsLeft !== 'number'
-  ) {
-    const fallbackLeft =
-      typeof attrs.approvals_left === 'number'
-        ? attrs.approvals_left
-        : existingDoc?.approvalsLeft;
-    if (typeof fallbackLeft === 'number') {
-      doc.approvalsLeft = fallbackLeft;
-    } else if (typeof doc.approvalsRequired === 'number') {
-      doc.approvalsLeft = doc.approvalsRequired;
-    } else {
-      doc.approvalsLeft = config.approvals.defaultRequired;
-    }
-  }
-  if (typeof doc.approvalsLeft === 'number' && doc.approvalsLeft < 0) {
-    doc.approvalsLeft = 0;
-  }
-  if (
-    typeof doc.approvalsRequired === 'number' &&
-    typeof doc.approvalsLeft === 'number' &&
-    doc.approvalsRequired > 0 &&
-    doc.approvalsLeft === 0
-  ) {
-    const approversCount = (doc.approvedBy ?? []).length;
-    if (approversCount < doc.approvalsRequired) {
-      doc.approvalsLeft = Math.max(doc.approvalsRequired - approversCount, 0);
-    }
-  }
   if (taskKey) {
     doc.taskKey = taskKey;
   }
@@ -267,20 +198,13 @@ const handleMergeRequestEventUnlocked = async (
     doc.gameStartedAt = createdAt ?? updatedAt ?? new Date();
   }
 
-  const isApprovalAction = attrs.action === 'approval' || attrs.action === 'approved';
-  const isUnapprovalAction = attrs.action === 'unapproval' || attrs.action === 'unapproved';
-  const isSystemApprovalReset = isUnapprovalAction && attrs.system === true;
-  const actorUsername: string | undefined = payload.user?.username;
-  if (!apiApprovals && (isApprovalAction || isUnapprovalAction)) {
-    if (isSystemApprovalReset) {
-      doc.approvedBy = [];
-    } else if (actorUsername) {
-      const others = (existingDoc?.approvedBy ?? []).filter(
-        (name) => name.toLowerCase() !== actorUsername.toLowerCase(),
-      );
-      doc.approvedBy = isApprovalAction ? [...others, actorUsername] : others;
-    }
-  }
+  const approvalEvent = {
+    action: attrs.action, system: attrs.system, actorUsername: payload.user?.username,
+    approvalsRequired: attrs.approvals_required, approvalsLeft: attrs.approvals_left,
+  };
+  Object.assign(doc, resolveMergeRequestApprovals(
+    existingDoc, apiApprovals, approvalEvent, config.approvals.defaultRequired,
+  ));
 
   Object.assign(doc, await loadReviewCommentHistory(doc));
   if (attrs.action === 'merge') {
@@ -316,75 +240,11 @@ const handleMergeRequestEventUnlocked = async (
   );
 
   if (attrs.action === 'open' && !doc.isDraft) {
-    const reviewerLabels = doc.reviewers?.length
-      ? await Promise.all(doc.reviewers.map((reviewer) => formatGitlabUserLabel(reviewer)))
-      : [];
-    const reviewerList = reviewerLabels.length ? reviewerLabels.join(', ') : 'не назначены';
-    const authorLabel = await formatGitlabUserLabel(author.gitlabUsername, author.name);
-    const message = buildMergeRequestCreatedMessage({
-      title: doc.title ?? '—',
-      authorLabel,
-      reviewerList,
-      url: doc.url ?? '—',
-      taskUrl: doc.taskUrl,
-    });
-    const authorRecipient = doc.author.gitlabUsername
-      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
-      : undefined;
-    const recipients = [
-      ...(await getLeadRecipients()),
-      ...(authorRecipient ? [authorRecipient] : []),
-    ];
     const notificationId = attrs.created_at ?? attrs.updated_at;
-    await deliverHtmlMessageToRecipients(bot, recipients, message, {
-      eventType: 'mr_created',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-      ...(notificationId ? { dedupeId: String(notificationId) } : {}),
-    });
+    await notifyMergeRequestCreated(bot, doc, notificationId ? String(notificationId) : undefined);
   }
 
-  if (isApprovalAction || isUnapprovalAction) {
-    const scoreApprovers = doc.approvedBy ?? existingDoc?.approvedBy;
-    const scoreMr: MergeRequestDocument = {
-      ...existingDoc,
-      ...doc,
-      ...(scoreApprovers ? { approvedBy: scoreApprovers } : {}),
-    };
-    await runGameAction(`approval ${doc.projectId}/${doc.iid}`, async () => {
-      if (isApprovalAction && actorUsername) {
-        await recordReviewApprovalScore({
-          mr: scoreMr,
-          username: actorUsername,
-          occurredAt: actionedAt ?? new Date(),
-        });
-        return;
-      }
-      if (isUnapprovalAction && actorUsername && !isSystemApprovalReset) {
-        await recordReviewUnapprovalScore({
-          mr: scoreMr,
-          username: actorUsername,
-          occurredAt: actionedAt ?? new Date(),
-        });
-        return;
-      }
-      if (isSystemApprovalReset && apiApprovals) {
-        const currentApprovers = new Set(
-          (doc.approvedBy ?? []).map((username) => username.toLowerCase()),
-        );
-        const removedApprovers = (existingDoc?.approvedBy ?? []).filter(
-          (username) => !currentApprovers.has(username.toLowerCase()),
-        );
-        for (const username of removedApprovers) {
-          await recordReviewUnapprovalScore({
-            mr: scoreMr,
-            username,
-            occurredAt: actionedAt ?? new Date(),
-          });
-        }
-      }
-    });
-  }
+  await recordMergeRequestApprovalEvent(doc, existingDoc, approvalEvent, Boolean(apiApprovals), actionedAt);
 
   if (attrs.action === 'close' || attrs.action === 'merge') {
     if (attrs.action === 'merge') {
@@ -397,71 +257,9 @@ const handleMergeRequestEventUnlocked = async (
       );
     }
     await clearMergeRequestGameReady(doc.projectId, doc.iid);
-    const audit = attrs.action === 'merge' ? doc.mergeApprovalAudit : undefined;
-    const closerName = await formatGitlabUserLabel(
-      audit?.mergerUsername ?? payload.user?.username, audit?.mergerName ?? payload.user?.name,
-    );
-    const leadRecipients = await getLeadRecipients();
-    const needsMergeAlert = audit?.status === 'missing_approvals' || audit?.status === 'unverified';
-    const alertedRecipients = needsMergeAlert ? [...leadRecipients] : [];
-    if (needsMergeAlert) {
-      await deliverHtmlMessageToRecipients(bot, leadRecipients, buildMergeApprovalAlertMessage({
-        title: doc.title ?? '—', url: doc.url ?? '—', taskUrl: doc.taskUrl,
-        mergerLabel: closerName, missingApprovals: audit.missingApprovals,
-        unverified: audit.status === 'unverified',
-      }), {
-        eventType: 'mr_merged_without_approval', projectId: doc.projectId, mrIid: doc.iid,
-        dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
-      });
-    }
-    // Warn only about a confirmed violation, never about an API outage.
-    // Use the saved actual merger, not the author or a repeated webhook's actor.
-    if (audit?.status === 'missing_approvals' && audit.mergerUsername) {
-      const mergerUser = await getUserByGitlabUsername(audit.mergerUsername);
-      if (mergerUser && mergerUser.isLead !== true) {
-        const mergerRecipient = await getRecipientByGitlabUsername(audit.mergerUsername);
-        if (mergerRecipient) {
-          await deliverHtmlMessageToRecipients(bot, [mergerRecipient], buildMergeApprovalWarningForMergerMessage({
-            title: doc.title ?? '—', url: doc.url ?? '—', taskUrl: doc.taskUrl,
-            missingApprovals: audit.missingApprovals,
-          }), {
-            eventType: 'mr_merge_policy_warning', projectId: doc.projectId, mrIid: doc.iid,
-            dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
-          });
-          alertedRecipients.push(mergerRecipient);
-        }
-      }
-    }
-    const originalAuthorName = await formatGitlabUserLabel(
-      doc.author.gitlabUsername,
-      doc.author.name,
-    );
-    const actionText = attrs.action === 'merge' ? 'слит' : 'закрыт';
-    const message = buildMergeRequestClosedMessage({
-      title: doc.title ?? '—',
-      actionText,
-      authorLabel: originalAuthorName,
-      closerLabel: closerName,
-      url: doc.url ?? '—',
-      taskUrl: doc.taskUrl,
-    });
-    const authorRecipient = doc.author.gitlabUsername
-      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
-      : undefined;
-    const authorAlreadyAlerted = authorRecipient && alertedRecipients.some((recipient) =>
-      (recipient.chatId !== undefined && recipient.chatId === authorRecipient.chatId) ||
-      (recipient.gitlabUsername && recipient.gitlabUsername.toLowerCase() === authorRecipient.gitlabUsername?.toLowerCase()),
-    );
-    const recipients = [
-      ...(needsMergeAlert ? [] : leadRecipients),
-      ...(authorRecipient && !authorAlreadyAlerted ? [authorRecipient] : []),
-    ];
-    const notificationId = attrs.action === 'merge' ? 'merge' : `${attrs.action}:${attrs.updated_at ?? ''}`;
-    await deliverHtmlMessageToRecipients(bot, recipients, message, {
-      eventType: 'mr_closed',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-      dedupeId: notificationId,
+    await notifyMergeRequestClosed(bot, doc, {
+      action: attrs.action, actorUsername: payload.user?.username,
+      actorName: payload.user?.name, updatedAt: attrs.updated_at,
     });
     await markAllRemindersInactiveForMr({ projectId: doc.projectId, iid: doc.iid });
     return;

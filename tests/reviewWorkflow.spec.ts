@@ -364,6 +364,24 @@ const comment = (username: string): Promise<void> => noteHandler.handleNoteEvent
 }, bot);
 
 describe('webhook and periodic review workflow', () => {
+  it('sends creation notifications through the lifecycle service after saving assigned reviewers', async () => {
+    await event('open', 'author');
+    assert.deepEqual(notifications, [
+      { username: 'tech.lead', eventType: 'mr_created' },
+      { username: 'team.lead', eventType: 'mr_created' },
+      { username: 'author', eventType: 'mr_created' },
+    ]);
+    assert.deepEqual(stored.reviewers, ['reviewer.one', 'reviewer.two']);
+    assert.equal(editCount, 1);
+  });
+
+  it('does not send creation notifications for a Draft MR', async () => {
+    draft = true;
+    await event('open', 'author');
+    assert.deepEqual(notifications, []);
+    assert.deepEqual(stored.reviewers, []);
+  });
+
   it('moves through both leads to merge-ready without reassignment or webhook loops', async (t) => {
     let now = Date.now();
     t.mock.method(Date, 'now', () => now);

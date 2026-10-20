@@ -14,6 +14,7 @@
 | --------------- | --------------------------------------- |
 | `npm run dev`   | Запуск в dev-режиме (ts-node-dev)       |
 | `npm run build` | Компиляция TypeScript в `dist/`         |
+| `npm test`      | Автотесты правил ревью и уведомлений без реальных Telegram/GitLab/MongoDB |
 | `npm start`     | Запуск собранного бота из `dist/`       |
 | `npm run import:users` | Импорт пользователей из `users.json` |
 
