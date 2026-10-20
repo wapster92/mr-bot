@@ -99,6 +99,10 @@ const deliverQueuedNotification = async (
     if (item._id) await markNotificationCancelled(item._id, 'Пользователь больше не является лидом', now);
     return;
   }
+  if (item.eventType === 'mr_merge_policy_warning' && user.isLead === true) {
+    if (item._id) await markNotificationCancelled(item._id, 'Исполнитель слияния теперь является лидом', now);
+    return;
+  }
   const withinHours = item.ignoreWorkHours === true || isWithinWorkingHours(user, now);
   const obsolete = await notificationObsolete(item, user, leadUsernames, reviewerUsernames, commenterUsernames, withinHours);
   if (obsolete === 'defer') return;

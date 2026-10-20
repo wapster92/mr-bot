@@ -10,6 +10,7 @@ import {
   buildMergeRequestClosedMessage,
   buildMergeRequestCreatedMessage,
   buildMergeApprovalAlertMessage,
+  buildMergeApprovalWarningForMergerMessage,
 } from '../../messages/templates';
 import { deliverHtmlMessageToRecipients } from '../../messages/send';
 import {
@@ -402,6 +403,7 @@ const handleMergeRequestEventUnlocked = async (
     );
     const leadRecipients = await getLeadRecipients();
     const needsMergeAlert = audit?.status === 'missing_approvals' || audit?.status === 'unverified';
+    const alertedRecipients = needsMergeAlert ? [...leadRecipients] : [];
     if (needsMergeAlert) {
       await deliverHtmlMessageToRecipients(bot, leadRecipients, buildMergeApprovalAlertMessage({
         title: doc.title ?? '—', url: doc.url ?? '—', taskUrl: doc.taskUrl,
@@ -411,6 +413,24 @@ const handleMergeRequestEventUnlocked = async (
         eventType: 'mr_merged_without_approval', projectId: doc.projectId, mrIid: doc.iid,
         dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
       });
+    }
+    // Warn only about a confirmed violation, never about an API outage.
+    // Use the saved actual merger, not the author or a repeated webhook's actor.
+    if (audit?.status === 'missing_approvals' && audit.mergerUsername) {
+      const mergerUser = await getUserByGitlabUsername(audit.mergerUsername);
+      if (mergerUser && mergerUser.isLead !== true) {
+        const mergerRecipient = await getRecipientByGitlabUsername(audit.mergerUsername);
+        if (mergerRecipient) {
+          await deliverHtmlMessageToRecipients(bot, [mergerRecipient], buildMergeApprovalWarningForMergerMessage({
+            title: doc.title ?? '—', url: doc.url ?? '—', taskUrl: doc.taskUrl,
+            missingApprovals: audit.missingApprovals,
+          }), {
+            eventType: 'mr_merge_policy_warning', projectId: doc.projectId, mrIid: doc.iid,
+            dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
+          });
+          alertedRecipients.push(mergerRecipient);
+        }
+      }
     }
     const originalAuthorName = await formatGitlabUserLabel(
       doc.author.gitlabUsername,
@@ -428,9 +448,9 @@ const handleMergeRequestEventUnlocked = async (
     const authorRecipient = doc.author.gitlabUsername
       ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
-    const authorAlreadyAlerted = needsMergeAlert && authorRecipient && leadRecipients.some((lead) =>
-      (lead.chatId !== undefined && lead.chatId === authorRecipient.chatId) ||
-      (lead.gitlabUsername && lead.gitlabUsername.toLowerCase() === authorRecipient.gitlabUsername?.toLowerCase()),
+    const authorAlreadyAlerted = authorRecipient && alertedRecipients.some((recipient) =>
+      (recipient.chatId !== undefined && recipient.chatId === authorRecipient.chatId) ||
+      (recipient.gitlabUsername && recipient.gitlabUsername.toLowerCase() === authorRecipient.gitlabUsername?.toLowerCase()),
     );
     const recipients = [
       ...(needsMergeAlert ? [] : leadRecipients),

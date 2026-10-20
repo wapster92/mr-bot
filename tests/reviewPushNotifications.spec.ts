@@ -107,6 +107,14 @@ describe('urgent merge audit delivery', () => {
       dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
     },
   );
+  const warnMerger = async (): Promise<void> => {
+    const recipient = await recipients.getRecipientByGitlabUsername('reviewer.one');
+    if (!recipient) return;
+    await delivery.deliverHtmlMessageToRecipients(bot, [recipient], 'За срочным слиянием обратись к лидам', {
+      eventType: 'mr_merge_policy_warning', projectId: 1, mrIid: 1,
+      dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
+    });
+  };
 
   it('delivers immediately outside working hours, including a weekend, and deduplicates repeats', async (t) => {
     t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-24T22:00:00Z') });
@@ -164,6 +172,47 @@ describe('urgent merge audit delivery', () => {
     assert.deepEqual(sent, []);
     withinHours = true; await notifications.flushNotificationQueue(bot);
     assert.deepEqual(sent, [4, 5]);
+  });
+
+  it('warns a non-lead merger immediately on a weekend and deduplicates repeated warnings', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-24T22:00:00Z') });
+    withinHours = false; mr.state = 'merged';
+    await alert(); await warnMerger(); await warnMerger();
+    assert.deepEqual(sent, [4, 5, 2]);
+    const warnings = queued.filter((item) => item.eventType === 'mr_merge_policy_warning');
+    assert.equal(warnings.length, 1);
+    assert.equal(warnings[0]?.status, 'delivered');
+    assert.equal(warnings[0]?.ignoreWorkHours, true);
+  });
+
+  it('recovers a pending merger warning outside hours even though the MR is already merged', async () => {
+    withinHours = false; mr.state = 'merged';
+    await warnMerger();
+    sent = []; queued[0]!.status = 'pending';
+    await notifications.flushNotificationQueue(bot);
+    assert.deepEqual(sent, [2]);
+    assert.equal(queued[0]?.status, 'delivered');
+  });
+
+  for (const change of ['removed', 'paused', 'forbidden', 'promoted']) {
+    it(`cancels a recovered merger warning if its recipient is ${change}`, async () => {
+      withinHours = false; await warnMerger();
+      sent = []; queued[0]!.status = 'pending';
+      if (change === 'removed') users.splice(1, 1);
+      else if (change === 'paused') users[1]!.isActive = false;
+      else if (change === 'forbidden') users[1]!.isAllowed = false;
+      else users[1]!.isLead = true;
+      await notifications.flushNotificationQueue(bot);
+      assert.deepEqual(sent, []);
+      assert.equal(queued[0]?.status, 'cancelled');
+    });
+  }
+
+  it('does not enqueue a merger warning for a paused or forbidden recipient', async () => {
+    users[1]!.isActive = false; await warnMerger();
+    users[1]!.isActive = true; users[1]!.isAllowed = false; await warnMerger();
+    assert.deepEqual(queued, []);
+    assert.deepEqual(sent, []);
   });
 });
 

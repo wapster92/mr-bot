@@ -60,6 +60,20 @@ export const buildMergeApprovalAlertMessage = (
   return parts.join('\n');
 };
 
+export const buildMergeApprovalWarningForMergerMessage = (
+  input: MergeRequestMessageInput & { missingApprovals: string[] },
+): string => {
+  const parts = buildMrParts(input,
+    `🙈 Ты слил MR «${escapeHtml(input.title)}» раньше, чем собрались все обязательные апрувы.`,
+  );
+  parts.splice(1, 0,
+    ...input.missingApprovals.map((reason) => `• ${escapeHtml(reason)}.`),
+    'Если задача горит и ждать ревью нельзя — обратись к лидам: они могут выполнить срочное слияние без полного набора апрувов.',
+    'Штрафа нет — просто в следующий раз позови лидов 🙂',
+  );
+  return parts.join('\n');
+};
+
 export const buildMergeReadyForAuthorMessage = (input: MergeRequestMessageInput): string => {
   const header = `✅ MR "${escapeHtml(input.title)}" получил нужные апрувы. Можно сливать.`;
   const parts = buildMrParts(input, header);

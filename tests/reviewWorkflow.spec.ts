@@ -24,6 +24,7 @@ let historyReads = 0;
 let mergeUser: { username?: string; name?: string; id?: number } | undefined;
 let mergedBy: { username?: string; name?: string; id?: number } | undefined;
 const mergeAlerts: Array<{ text: string; ignoreWorkHours?: boolean; dedupeId?: string }> = [];
+const mergerWarnings: Array<{ text: string; ignoreWorkHours?: boolean; dedupeId?: string }> = [];
 let mergedScores = 0;
 const readyKeys: string[] = [];
 const notifications: Array<{ username: string; eventType: string }> = [];
@@ -125,6 +126,7 @@ before(() => {
       meta: { eventType: string; ignoreWorkHours?: boolean; dedupeId?: string },
     ) => {
       if (meta.eventType === 'mr_merged_without_approval') mergeAlerts.push({ text, ...meta });
+      if (meta.eventType === 'mr_merge_policy_warning') mergerWarnings.push({ text, ...meta });
       for (const username of new Set(recipients.map((recipient) => recipient.gitlabUsername))) {
         notifications.push({ username, eventType: meta.eventType });
       }
@@ -151,6 +153,7 @@ beforeEach(() => {
   historicalNotes = [];
   historyReads = 0; readyKeys.length = 0;
   mergeUser = undefined; mergedBy = undefined; mergeAlerts.length = 0; mergedScores = 0;
+  mergerWarnings.length = 0;
 });
 
 describe('merge approval audit webhook', () => {
@@ -161,11 +164,16 @@ describe('merge approval audit webhook', () => {
     assert.deepEqual(notifications, [
       { username: 'tech.lead', eventType: 'mr_merged_without_approval' },
       { username: 'team.lead', eventType: 'mr_merged_without_approval' },
-      { username: 'author', eventType: 'mr_closed' },
+      { username: 'author', eventType: 'mr_merge_policy_warning' },
     ]);
     assert.equal(mergeAlerts[0]?.ignoreWorkHours, true);
     assert.match(mergeAlerts[0]!.text, /без полного набора апрувов/);
     assert.match(mergeAlerts[0]!.text, /tech.lead, team.lead/);
+    assert.equal(mergerWarnings[0]?.ignoreWorkHours, true);
+    assert.match(mergerWarnings[0]!.text, /раньше, чем собрались все обязательные апрувы/);
+    assert.match(mergerWarnings[0]!.text, /обратись к лидам/);
+    assert.match(mergerWarnings[0]!.text, /Штрафа нет/);
+    assert.ok(mergerWarnings[0]!.text.includes(stored.url));
     assert.equal(mergedScores, 1); // Existing merge reward is unchanged; no new penalty action.
     assert.deepEqual(labels, ['bug']);
   });
@@ -176,6 +184,7 @@ describe('merge approval audit webhook', () => {
     await event('merge', 'author');
     assert.equal(stored.mergeApprovalAudit?.status, 'approved');
     assert.equal(mergeAlerts.length, 0);
+    assert.equal(mergerWarnings.length, 0);
     assert.ok(notifications.every((item) => item.eventType === 'mr_closed'));
   });
 
@@ -203,6 +212,7 @@ describe('merge approval audit webhook', () => {
     }
     assert.equal(mergeAlerts.length, 0);
     assert.equal(historyReads, 0);
+    assert.equal(mergerWarnings.length, 0);
   });
 
   it('uses the actual API merge_user rather than the webhook actor, with merged_by as legacy fallback', async () => {
@@ -224,6 +234,7 @@ describe('merge approval audit webhook', () => {
     assert.deepEqual(notifications, [
       { username: 'tech.lead', eventType: 'mr_merged_without_approval' },
       { username: 'team.lead', eventType: 'mr_merged_without_approval' },
+      { username: 'reviewer.one', eventType: 'mr_merge_policy_warning' },
     ]);
     assert.ok(!stored.mergeApprovalAudit?.missingApprovals.some((reason) => reason.includes('tech.lead')));
   });
@@ -251,6 +262,9 @@ describe('merge approval audit webhook', () => {
     assert.deepEqual(stored.mergeApprovalAudit, firstAudit);
     assert.equal(historyReads, 1);
     assert.deepEqual(mergeAlerts.map((alert) => alert.dedupeId), ['merge-audit-v1', 'merge-audit-v1']);
+    assert.deepEqual(mergerWarnings.map((warning) => warning.dedupeId), ['merge-audit-v1', 'merge-audit-v1']);
+    assert.deepEqual(notifications.filter((item) => item.eventType === 'mr_merge_policy_warning')
+      .map((item) => item.username), ['author', 'author']);
   });
 
   it('reports unavailable approvals as unverified, not as a proven violation', async () => {
@@ -259,6 +273,7 @@ describe('merge approval audit webhook', () => {
     assert.equal(stored.mergeApprovalAudit?.status, 'unverified');
     assert.match(mergeAlerts[0]!.text, /подтвердить полный набор апрувов не удалось/);
     assert.ok(!mergeAlerts[0]!.text.includes('без полного набора апрувов'));
+    assert.equal(mergerWarnings.length, 0);
   });
 
   it('reports unknown history neutrally even if all known approvers approved', async () => {
@@ -266,6 +281,7 @@ describe('merge approval audit webhook', () => {
     await event('merge', 'author');
     assert.equal(stored.mergeApprovalAudit?.status, 'unverified');
     assert.match(mergeAlerts[0]!.text, /GitLab API временно недоступен/);
+    assert.equal(mergerWarnings.length, 0);
   });
 
   it('does not audit an MR closed without merging', async () => {
@@ -285,6 +301,47 @@ describe('merge approval audit webhook', () => {
     assert.equal(editCount, 1);
     assert.equal(selections, 0);
     assert.equal(stored.state, 'merged');
+  });
+
+  it('warns the actual merger from the API, and keeps a separate ordinary message for the author', async () => {
+    mergeUser = { username: 'reviewer.two' };
+    await event('merge', 'author');
+    assert.deepEqual(notifications, [
+      { username: 'tech.lead', eventType: 'mr_merged_without_approval' },
+      { username: 'team.lead', eventType: 'mr_merged_without_approval' },
+      { username: 'reviewer.two', eventType: 'mr_merge_policy_warning' },
+      { username: 'author', eventType: 'mr_closed' },
+    ]);
+  });
+
+  it('does not warn an unknown merger or redirect their warning to the author', async () => {
+    await event('merge', 'unknown');
+    assert.equal(mergerWarnings.length, 0);
+    assert.ok(notifications.some((item) => item.username === 'author' && item.eventType === 'mr_closed'));
+  });
+
+  it('does not resend a saved violation warning after its recipient becomes a lead', async (t) => {
+    await event('merge', 'author');
+    const store = require('../src/data/userStore.ts');
+    const original = store.getUserByGitlabUsername;
+    t.mock.method(store, 'getUserByGitlabUsername', async (username: string) => {
+      const user = await original(username);
+      return username === 'author' ? { ...user, isLead: true } : user;
+    });
+    await event('merge', 'author');
+    assert.equal(mergerWarnings.length, 1);
+  });
+
+  it('escapes MR details in the merger warning', () => {
+    const { buildMergeApprovalWarningForMergerMessage } = require('../src/messages/templates.ts');
+    const message = buildMergeApprovalWarningForMergerMessage({
+      title: '<unsafe>', url: 'https://gitlab.example/?a=1&b=2',
+      missingApprovals: ['нет апрува <user>'], taskUrl: 'https://jira.example/?a=1&b=2',
+    });
+    assert.ok(message.includes('«&lt;unsafe&gt;»'));
+    assert.ok(message.includes('нет апрува &lt;user&gt;'));
+    assert.ok(message.includes('a=1&amp;b=2'));
+    assert.ok(!message.includes('<unsafe>'));
   });
 });
 
