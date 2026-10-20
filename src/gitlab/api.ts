@@ -199,9 +199,9 @@ export const fetchMergeRequest = async (
   if (author) {
     result.author = author;
   }
-  result.labels = Array.isArray(response?.labels)
-    ? response.labels.filter((label: unknown): label is string => typeof label === 'string')
-    : [];
+  if (Array.isArray(response.labels)) {
+    result.labels = response.labels.filter((label: unknown): label is string => typeof label === 'string');
+  }
   if (typeof response?.title === 'string') {
     result.title = response.title;
   }
@@ -405,4 +405,55 @@ export const updateMergeRequestLabels = async (
     () => client.MergeRequests.edit(projectId, iid, payload),
   );
   return Boolean(result);
+};
+
+export type GitlabProjectLabel = {
+  id: number;
+  name: string;
+  color: string;
+  isProjectLabel: boolean;
+};
+
+export const fetchProjectLabels = async (
+  projectId: number,
+): Promise<GitlabProjectLabel[] | undefined> => {
+  const api = getApiConfig();
+  if (!api) return undefined;
+  const labels = await withRetry(api, `ProjectLabels.all ${projectId}`, () =>
+    getClient(api).ProjectLabels.all(projectId, { perPage: 100 }),
+  );
+  return labels?.map((label) => ({
+    id: label.id,
+    name: label.name,
+    color: label.color,
+    isProjectLabel: label.is_project_label !== false,
+  }));
+};
+
+export const ensureProjectLabel = async (
+  projectId: number,
+  label: { name: string; color: string },
+  existing?: GitlabProjectLabel,
+): Promise<GitlabProjectLabel | undefined> => {
+  const api = getApiConfig();
+  if (!api) return undefined;
+  if (existing?.color.toLowerCase() === label.color.toLowerCase()) return existing;
+  // Never recolor inherited group labels.
+  if (existing && !existing.isProjectLabel) return undefined;
+  const client = getClient(api);
+  const result = await withRetry(
+    { ...api, retries: 1 },
+    `ProjectLabels.ensure ${projectId} ${label.name}`,
+    () => existing
+      ? client.ProjectLabels.edit(projectId, existing.id, { color: label.color })
+      : client.ProjectLabels.create(projectId, label.name, label.color, {
+          description: 'Автоматическая метка этапа ревью MR-bot',
+        }),
+  );
+  return result ? {
+    id: result.id,
+    name: result.name,
+    color: result.color,
+    isProjectLabel: result.is_project_label !== false,
+  } : undefined;
 };

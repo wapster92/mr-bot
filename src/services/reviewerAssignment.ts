@@ -1,11 +1,12 @@
 import { pullReviewers } from '../data/reviewerQueue';
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
-import { getUserByGitlabUsername } from '../data/userStore';
+import { getUserByGitlabUsername, listLeadUsers } from '../data/userStore';
 import { isReviewerEnabled } from '../data/userTypes';
 import {
   buildReviewerLabels,
   syncReviewerLabelsToGitlab,
 } from './reviewerLabelSync';
+import { buildReviewLabelPlan, MERGE_READY_LABEL } from './reviewLabelPlan';
 
 const REQUIRED_REVIEWERS = 2;
 
@@ -41,6 +42,8 @@ const filterAvailableReviewers = async (reviewers: string[]): Promise<string[]> 
 export type ReviewerReconciliation = {
   reviewers: string[];
   reviewerLabels: string[];
+  approvalRequestedAt: Record<string, Date>;
+  approvalsComplete: boolean;
   reviewersChanged: boolean;
   labelsSyncOk: boolean;
   labelsSyncError?: string;
@@ -49,14 +52,19 @@ export type ReviewerReconciliation = {
 export const reconcileReviewersForMr = async (
   mr: MergeRequestDocument,
   currentGitlabLabels: string[] | undefined,
+  now = new Date(),
 ): Promise<ReviewerReconciliation> => {
   const previousReviewers = uniqueUsernames(mr.reviewers ?? []);
   const previousReviewerLabels =
     mr.reviewerLabels ?? (await buildReviewerLabels(previousReviewers));
 
-  let reviewers: string[] = [];
-  if (!mr.isDraft) {
-    reviewers = await filterAvailableReviewers(previousReviewers);
+  let reviewers: string[] = ['closed', 'merged'].includes(mr.state ?? '')
+    ? previousReviewers
+    : [];
+  if (!mr.isDraft && !['closed', 'merged'].includes(mr.state ?? '')) {
+    reviewers = await filterAvailableReviewers(previousReviewers.filter(
+      (username) => username.toLowerCase() !== mr.author.gitlabUsername?.toLowerCase(),
+    ));
     const needed = Math.max(0, REQUIRED_REVIEWERS - reviewers.length);
     if (needed > 0) {
       const exclude = [
@@ -70,13 +78,23 @@ export const reconcileReviewersForMr = async (
     }
   }
 
-  const reviewerLabels = await buildReviewerLabels(reviewers);
+  const [leads, reviewerUsers] = await Promise.all([
+    listLeadUsers(),
+    Promise.all(reviewers.map((username) => getUserByGitlabUsername(username))),
+  ]);
+  const plan = buildReviewLabelPlan(
+    { ...mr, reviewers },
+    [...leads, ...reviewerUsers.filter((user) => user !== undefined)],
+    now,
+  );
+  const reviewerLabels = plan.labels.map((label) => label.name);
   const labelsSync = await syncReviewerLabelsToGitlab(
     mr.projectId,
     mr.iid,
     currentGitlabLabels,
     previousReviewerLabels,
     reviewerLabels,
+    plan.labels,
   );
   const reviewersChanged = !areSameReviewers(previousReviewers, reviewers);
   if (reviewersChanged) {
@@ -87,7 +105,13 @@ export const reconcileReviewersForMr = async (
 
   return {
     reviewers,
-    reviewerLabels: labelsSync.ok ? reviewerLabels : previousReviewerLabels,
+    // Retain ownership of both targets after a failed/uncertain edit so a retry
+    // can remove obsolete labels without touching unrelated project labels.
+    reviewerLabels: labelsSync.ok
+      ? reviewerLabels
+      : [...new Set([...previousReviewerLabels, ...reviewerLabels])],
+    approvalRequestedAt: plan.approvalRequestedAt,
+    approvalsComplete: plan.labels.some((label) => label.name === MERGE_READY_LABEL.name),
     reviewersChanged,
     labelsSyncOk: labelsSync.ok,
     ...(labelsSync.error ? { labelsSyncError: labelsSync.error } : {}),

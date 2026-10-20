@@ -7,9 +7,10 @@ import {
   listPendingReviewReminders,
   markEscalated,
   markReminderInactive,
+  markReviewCompleted,
   releaseReviewReminderClaim,
 } from '../data/reviewReminderRepository';
-import { getUserByGitlabUsername } from '../data/userStore';
+import { getUserByGitlabUsername, listActiveReviewers, listLeadUsers } from '../data/userStore';
 import { isReviewerEnabled } from '../data/userTypes';
 import { formatGitlabUserLabel } from '../messages/format';
 import { getLeadRecipients, isWithinWorkingHours, getRecipientByGitlabUsername } from '../messages/recipients';
@@ -17,6 +18,7 @@ import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../messages/
 import { buildReviewEscalationMessage, buildReviewReminderMessage } from '../messages/templates';
 import { addWorkingMinutes, getWorkdayMinutes } from './workingHours';
 import { recordReviewOverdueScore } from './gameScoring';
+import { hasRequiredMergeApprovals, summarizeMergeRequestApprovals } from './approvalPolicy';
 
 const REMINDER_INTERVAL_MINUTES = 180;
 const ESCALATION_DAYS = 2;
@@ -45,6 +47,9 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
     }
 
     const now = new Date();
+    const [leads, activeReviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
+    const leadUsernames = new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase()));
+    const reviewerUsernames = new Set(activeReviewers.map((name) => name.toLowerCase()));
     for (const reminder of reminders) {
       let claimedAt: Date | undefined;
       try {
@@ -55,6 +60,18 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
         }
         if (mr.isDraft || isDraftTitle(mr.title)) {
           await markReminderInactive(reminder.projectId, reminder.iid, reminder.reviewerUsername);
+          continue;
+        }
+
+        const reviewerUsername = reminder.reviewerUsername.toLowerCase();
+        const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames);
+        if (hasRequiredMergeApprovals(summary) ||
+          !mr.reviewers?.some((username) => username.toLowerCase() === reviewerUsername)) {
+          await markReminderInactive(reminder.projectId, reminder.iid, reminder.reviewerUsername);
+          continue;
+        }
+        if (mr.approvedBy?.some((username) => username.toLowerCase() === reviewerUsername)) {
+          await markReviewCompleted(reminder.projectId, reminder.iid, reminder.reviewerUsername);
           continue;
         }
 

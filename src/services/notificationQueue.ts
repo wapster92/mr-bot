@@ -11,23 +11,26 @@ import {
 import {
   getUserByGitlabUsername,
   getUserByTelegramUsername,
+  listActiveReviewers,
   listLeadUsers,
 } from '../data/userStore';
 import { isWithinWorkingHours } from '../messages/recipients';
 import { sendHtmlMessage } from '../messages/send';
-import { hasLeadApproval, summarizeApprovals } from './approvalPolicy';
+import { isApprovalNotificationRelevant } from './approvalNotifications';
 
 let flushInProgress = false;
 
-const finalReviewAlreadyCompleted = async (
+const approvalNotificationObsolete = async (
   item: {
     eventType?: string;
     mrKey?: string;
   },
   leadUsernames: Set<string>,
+  reviewerUsernames: Set<string>,
+  recipientUsername: string,
 ): Promise<boolean> => {
   if (
-    item.eventType !== 'mr_final_review' ||
+    !['mr_final_review', 'mr_ready_to_merge'].includes(item.eventType ?? '') ||
     !item.mrKey
   ) {
     return false;
@@ -39,8 +42,8 @@ const finalReviewAlreadyCompleted = async (
     return false;
   }
   const mr = await findMergeRequest(projectId, iid);
-  return hasLeadApproval(
-    summarizeApprovals(mr?.approvedBy ?? [], leadUsernames),
+  return !isApprovalNotificationRelevant(
+    item.eventType, mr, recipientUsername, leadUsernames, reviewerUsernames,
   );
 };
 
@@ -57,10 +60,11 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
     }
 
     const now = new Date();
-    const leads = await listLeadUsers();
+    const [leads, reviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
     const leadUsernames = new Set(
       leads.map((lead) => lead.gitlabUsername.toLowerCase()),
     );
+    const reviewerUsernames = new Set(reviewers.map((name) => name.toLowerCase()));
     for (const item of queued) {
       const userRecord =
         (item.telegramUsername
@@ -79,11 +83,11 @@ export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise
         continue;
       }
 
-      if (await finalReviewAlreadyCompleted(item, leadUsernames)) {
+      if (await approvalNotificationObsolete(item, leadUsernames, reviewerUsernames, userRecord.gitlabUsername)) {
         if (item._id) {
           await markNotificationCancelled(
             item._id,
-            'Финальная проверка уже выполнена другим лидом',
+            'Уведомление о проверке или готовности MR больше не актуально',
             now,
           );
         }

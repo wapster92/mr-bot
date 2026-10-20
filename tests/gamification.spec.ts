@@ -32,7 +32,8 @@ const createMergeRequest = (
   lastLintStatus: 'success',
   mergeStatus: 'can_be_merged',
   detailedMergeStatus: 'mergeable',
-  approvedBy: ['reviewer.one', 'reviewer.two', 'lead.user'],
+  reviewers: ['reviewer.one', 'reviewer.two'],
+  approvedBy: ['reviewer.one', 'reviewer.two', 'lead.user', 'lead.two'],
   ...update,
 });
 
@@ -92,22 +93,31 @@ describe('game balance', () => {
 });
 
 describe('merge readiness', () => {
-  const leads = new Set(['lead.user']);
+  const leads = new Set(['lead.user', 'lead.two']);
   const activeUsers = new Set([
     'reviewer.one',
     'reviewer.two',
     'lead.user',
+    'lead.two',
   ]);
 
-  it('requires green lint, one developer approve and one lead approve', () => {
+  it('requires green lint, one reviewer approve and both lead approvals', () => {
     assert.equal(isMergeRequestGameReady(createMergeRequest(), leads, activeUsers), true);
+    assert.equal(
+      isMergeRequestGameReady(
+        createMergeRequest({ approvedBy: ['reviewer.one', 'lead.user', 'lead.two'] }),
+        leads,
+        activeUsers,
+      ),
+      true,
+    );
     assert.equal(
       isMergeRequestGameReady(
         createMergeRequest({ approvedBy: ['reviewer.one', 'lead.user'] }),
         leads,
         activeUsers,
       ),
-      true,
+      false,
     );
     assert.equal(
       isMergeRequestGameReady(
@@ -155,5 +165,12 @@ describe('merge readiness', () => {
       ),
       false,
     );
+  });
+
+  it('starts the author timer for an author lead after the other lead approves', () => {
+    assert.equal(isMergeRequestGameReady(createMergeRequest({
+      author: { gitlabUsername: 'lead.user' },
+      approvedBy: ['reviewer.one', 'lead.two'],
+    }), leads, activeUsers), true);
   });
 });

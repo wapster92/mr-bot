@@ -25,7 +25,7 @@ import { buildMergeRequestMessages } from './services/mrSummary';
 import { flushNotificationQueue } from './services/notificationQueue';
 import { listErroredNotifications } from './data/notificationQueueRepository';
 import { buildGameProfileMessage, buildGameTopMessage } from './services/gameStats';
-import { needsLeadReview, summarizeApprovals } from './services/approvalPolicy';
+import { needsLeadReview, summarizeMergeRequestApprovals } from './services/approvalPolicy';
 import { syncOpenMergeRequests } from './services/mergeRequestSync';
 import { UserDeletionConfirmations } from './services/userDeletionConfirmation';
 
@@ -594,10 +594,9 @@ export const createBot = (token: string): Telegraf<BotContext> => {
 
     const candidates = mergeRequests.filter((mr) => {
       if (mr.isDraft) return false;
-      const approvers = mr.approvedBy ?? [];
-      return needsLeadReview(
-        summarizeApprovals(approvers, leadUsernamesLower, reviewerUsernamesLower),
-      );
+      const summary = summarizeMergeRequestApprovals(mr, leadUsernamesLower, reviewerUsernamesLower);
+      return needsLeadReview(summary) &&
+        summary.pendingLeadUsernames.includes(actor.gitlabUsername.toLowerCase());
     });
 
     if (!candidates.length) {

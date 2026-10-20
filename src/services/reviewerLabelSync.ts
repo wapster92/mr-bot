@@ -2,11 +2,62 @@ import {
   getGitlabUserProfile,
   upsertGitlabUserProfile,
 } from '../data/userStore';
-import { fetchUserByUsername, updateMergeRequestLabels } from '../gitlab/api';
+import {
+  ensureProjectLabel,
+  fetchProjectLabels,
+  fetchUserByUsername,
+  updateMergeRequestLabels,
+  type GitlabProjectLabel,
+} from '../gitlab/api';
+import type { ReviewLabel } from './reviewLabelPlan';
 
 const LABEL_EDIT_COOLDOWN_MS = 2 * 60 * 1000;
 const recentSuccessfulTargets = new Map<string, number>();
 const recentEditAttempts = new Map<string, number>();
+const projectLabelCache = new Map<number, { fetchedAt: number; labels: GitlabProjectLabel[] }>();
+const labelAttempts = new Map<string, number>();
+let labelDefinitionOperation = Promise.resolve();
+
+const ensureReviewLabelDefinitions = async (
+  projectId: number,
+  definitions: ReviewLabel[],
+): Promise<boolean> => {
+  if (!definitions.length) return true;
+  const previous = labelDefinitionOperation;
+  let release = (): void => {};
+  labelDefinitionOperation = new Promise<void>((resolve) => { release = resolve; });
+  await previous.catch(() => {});
+  try {
+    const now = Date.now();
+    let cached = projectLabelCache.get(projectId);
+    if (!cached || now - cached.fetchedAt > 5 * 60 * 1000) {
+      const key = `${projectId}:list`;
+      const attemptedAt = labelAttempts.get(key);
+      if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) return false;
+      labelAttempts.set(key, now);
+      const labels = await fetchProjectLabels(projectId);
+      if (!labels) return false;
+      cached = { fetchedAt: now, labels };
+      projectLabelCache.set(projectId, cached);
+    }
+    pruneRecentEntries(labelAttempts, now);
+    for (const definition of definitions) {
+      const existing = cached.labels.find((label) => label.name === definition.name);
+      if (existing?.color.toLowerCase() === definition.color.toLowerCase()) continue;
+      const key = `${projectId}:${definition.name}`;
+      const attemptedAt = labelAttempts.get(key);
+      if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) return false;
+      labelAttempts.set(key, now);
+      const ensured = await ensureProjectLabel(projectId, definition, existing);
+      if (!ensured) return false;
+      cached.labels = cached.labels.filter((label) => label.name !== definition.name);
+      cached.labels.push(ensured);
+    }
+    return true;
+  } finally {
+    release();
+  }
+};
 
 const normalizeValues = (values: string[]): string[] =>
   Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
@@ -114,6 +165,7 @@ export const syncReviewerLabelsToGitlab = async (
   currentLabels: string[] | undefined,
   previousReviewerLabels: string[],
   nextReviewerLabels: string[],
+  definitions: ReviewLabel[] = [],
 ): Promise<{ ok: boolean; labels: string[]; error?: string }> => {
   if (!currentLabels) {
     return {
@@ -128,6 +180,9 @@ export const syncReviewerLabelsToGitlab = async (
     previousReviewerLabels,
     nextReviewerLabels,
   );
+  if (!(await ensureReviewLabelDefinitions(projectId, definitions))) {
+    return { ok: false, labels, error: 'GitLab review label definitions are unavailable' };
+  }
   if (areSameStringSets(labels, currentLabels)) {
     console.info(`[reviewer-label-sync] skip unchanged ${projectId}/${iid}`);
     return { ok: true, labels };
@@ -137,7 +192,7 @@ export const syncReviewerLabelsToGitlab = async (
   const now = Date.now();
   if (wasRecentlySynced(syncKey, now)) {
     console.warn(`[reviewer-label-sync] skip dedupe ${projectId}/${iid}`);
-    return { ok: true, labels };
+    return { ok: false, labels, error: 'Stale GitLab labels deferred by dedupe' };
   }
 
   if (isEditCoolingDown(projectId, iid, now)) {

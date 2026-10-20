@@ -2,22 +2,15 @@ import {
   upsertMergeRequest,
   type MergeRequestDocument,
   findMergeRequest,
-  updateMergeRequest,
   clearMergeRequestGameReady,
 } from '../../data/mergeRequestRepository';
-import {
-  getUserByGitlabUsername,
-  listActiveReviewers,
-  listLeadUsers,
-} from '../../data/userStore';
+import { getUserByGitlabUsername } from '../../data/userStore';
 import { formatGitlabUserLabel } from '../../messages/format';
 import {
-  buildFinalReviewMessage,
-  buildMergeReadyForAuthorMessage,
   buildMergeRequestClosedMessage,
   buildMergeRequestCreatedMessage,
 } from '../../messages/templates';
-import { deliverHtmlMessage, deliverHtmlMessageToRecipients } from '../../messages/send';
+import { deliverHtmlMessageToRecipients } from '../../messages/send';
 import {
   getLeadRecipients,
   getRecipientByGitlabUsername,
@@ -41,11 +34,7 @@ import {
   runGameAction,
 } from '../../services/gameScoring';
 import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
-import {
-  hasRequiredMergeApprovals,
-  needsLeadReview,
-  summarizeApprovals,
-} from '../../services/approvalPolicy';
+import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -152,6 +141,7 @@ const handleMergeRequestEventUnlocked = async (
   }
 
   const doc: MergeRequestDocument = {
+    ...existingDoc,
     projectId: project.id,
     projectPath: project.path_with_namespace,
     mrId: attrs.id,
@@ -162,18 +152,11 @@ const handleMergeRequestEventUnlocked = async (
     url: attrs.url,
     author,
     action: attrs.action,
-    isDraft: isDraft(attrs),
+    isDraft: isDraft(apiMergeRequest ?? attrs),
   };
   const draftEnded = wasDraft && !doc.isDraft;
   if (draftEnded) {
     console.info(`[merge-request] Draft ended for MR ${doc.projectId}/${doc.iid}`);
-  }
-
-  if (existingDoc?.reviewers) {
-    doc.reviewers = existingDoc.reviewers;
-  }
-  if (existingDoc?.reviewerLabels) {
-    doc.reviewerLabels = existingDoc.reviewerLabels;
   }
 
   if (attrs.description) {
@@ -182,6 +165,9 @@ const handleMergeRequestEventUnlocked = async (
   if (attrs.state) {
     doc.state = attrs.state;
   }
+  if (apiMergeRequest?.state) doc.state = apiMergeRequest.state;
+  if (attrs.action === 'close') doc.state = 'closed';
+  if (attrs.action === 'merge') doc.state = 'merged';
   if (attrs.merge_status) {
     doc.mergeStatus = attrs.merge_status;
   }
@@ -268,22 +254,35 @@ const handleMergeRequestEventUnlocked = async (
     doc.gameStartedAt = createdAt ?? updatedAt ?? new Date();
   }
 
-  if (attrs.action === 'open' || attrs.action === 'update') {
-    const reviewerState = await reconcileReviewersForMr(
-      doc,
-      apiMergeRequest?.labels,
-    );
-    doc.reviewers = reviewerState.reviewers;
-    doc.reviewerLabels = reviewerState.reviewerLabels;
-    if (reviewerState.labelsSyncOk) {
-      doc.reviewersSyncedAt = new Date();
-    } else {
-      doc.reviewersSyncFailedAt = new Date();
-      doc.reviewersSyncError = reviewerState.labelsSyncError ?? 'GitLab label sync failed';
-      console.warn(
-        `[merge-request] Failed to sync reviewer labels for MR ${doc.projectId}/${doc.iid}: ${doc.reviewersSyncError}`,
+  const isApprovalAction = attrs.action === 'approval' || attrs.action === 'approved';
+  const isUnapprovalAction = attrs.action === 'unapproval' || attrs.action === 'unapproved';
+  const isSystemApprovalReset = isUnapprovalAction && attrs.system === true;
+  const actorUsername: string | undefined = payload.user?.username;
+  if (!apiApprovals && (isApprovalAction || isUnapprovalAction)) {
+    if (isSystemApprovalReset) {
+      doc.approvedBy = [];
+    } else if (actorUsername) {
+      const others = (existingDoc?.approvedBy ?? []).filter(
+        (name) => name.toLowerCase() !== actorUsername.toLowerCase(),
       );
+      doc.approvedBy = isApprovalAction ? [...others, actorUsername] : others;
     }
+  }
+
+  const reviewerState = await reconcileReviewersForMr(doc, apiMergeRequest?.labels);
+  doc.reviewers = reviewerState.reviewers;
+  doc.reviewerLabels = reviewerState.reviewerLabels;
+  doc.approvalRequestedAt = reviewerState.approvalRequestedAt;
+  doc.reviewerLabelsCleanupPending =
+    ['closed', 'merged'].includes(doc.state ?? '') && !reviewerState.labelsSyncOk;
+  if (reviewerState.labelsSyncOk) {
+    doc.reviewersSyncedAt = new Date();
+  } else {
+    doc.reviewersSyncFailedAt = new Date();
+    doc.reviewersSyncError = reviewerState.labelsSyncError ?? 'GitLab label sync failed';
+    console.warn(
+      `[merge-request] Failed to sync reviewer labels for MR ${doc.projectId}/${doc.iid}: ${doc.reviewersSyncError}`,
+    );
   }
 
   await upsertMergeRequest(doc);
@@ -292,7 +291,7 @@ const handleMergeRequestEventUnlocked = async (
     { projectId: doc.projectId, iid: doc.iid },
     doc.reviewers ?? [],
     new Date(),
-    doc.isDraft,
+    doc.isDraft || ['closed', 'merged'].includes(doc.state ?? '') || reviewerState.approvalsComplete,
     draftEnded,
   );
 
@@ -325,25 +324,8 @@ const handleMergeRequestEventUnlocked = async (
     });
   }
 
-  // GitLab uses approval/unapproval for individual actions and can additionally
-  // report approved/unapproved when the MR-wide approval state changes.
-  const isApprovalAction =
-    attrs.action === 'approval' || attrs.action === 'approved';
-  const isUnapprovalAction =
-    attrs.action === 'unapproval' || attrs.action === 'unapproved';
-  const isSystemApprovalReset = isUnapprovalAction && attrs.system === true;
-  let nextApprovers: string[] | undefined;
-  const actorUsername = payload.user?.username;
   if (isApprovalAction || isUnapprovalAction) {
-    if (!apiApprovals && actorUsername && !isSystemApprovalReset) {
-      const currentApprovers = existingDoc?.approvedBy ?? [];
-      nextApprovers =
-        isApprovalAction
-          ? Array.from(new Set([...currentApprovers, actorUsername]))
-          : currentApprovers.filter((username) => username !== actorUsername);
-      await updateMergeRequest(doc.projectId, doc.iid, { approvedBy: nextApprovers });
-    }
-    const scoreApprovers = doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy;
+    const scoreApprovers = doc.approvedBy ?? existingDoc?.approvedBy;
     const scoreMr: MergeRequestDocument = {
       ...existingDoc,
       ...doc,
@@ -428,7 +410,7 @@ const handleMergeRequestEventUnlocked = async (
   }
 
   const approvers =
-    doc.approvedBy ?? nextApprovers ?? existingDoc?.approvedBy ?? [];
+    doc.approvedBy ?? existingDoc?.approvedBy ?? [];
   const uniqueApprovers = Array.from(new Set(approvers));
   if (doc.reviewers?.length && uniqueApprovers.length) {
     await markReviewCompletedForApprovers(
@@ -437,58 +419,7 @@ const handleMergeRequestEventUnlocked = async (
       uniqueApprovers,
     );
   }
-  const [leads, reviewers] = await Promise.all([
-    listLeadUsers(),
-    listActiveReviewers(),
-  ]);
-  const leadUsernames = leads
-    .map((lead) => lead.gitlabUsername)
-    .filter(Boolean)
-    .map((name) => name.toLowerCase());
-  const reviewerUsernames = reviewers.map((name) => name.toLowerCase());
-  const approvalSummary = summarizeApprovals(
-    uniqueApprovers,
-    new Set(leadUsernames),
-    new Set(reviewerUsernames),
-  );
-
-  if (needsLeadReview(approvalSummary) && !existingDoc?.finalReviewNotified) {
-    const message = buildFinalReviewMessage({
-      title: doc.title ?? '—',
-      url: doc.url ?? '—',
-      taskUrl: doc.taskUrl,
-    });
-    await deliverHtmlMessageToRecipients(bot, await getLeadRecipients(), message, {
-      eventType: 'mr_final_review',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-    });
-    await updateMergeRequest(doc.projectId, doc.iid, { finalReviewNotified: true });
-  }
-
-  if (
-    !existingDoc?.authorMergeNotified &&
-    hasRequiredMergeApprovals(approvalSummary)
-  ) {
-    const message = buildMergeReadyForAuthorMessage({
-      title: doc.title ?? '—',
-      url: doc.url ?? '—',
-      taskUrl: doc.taskUrl,
-    });
-    const authorRecipient = doc.author.gitlabUsername
-      ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
-      : undefined;
-    if (authorRecipient) {
-      await deliverHtmlMessage(bot, authorRecipient, message, {
-        eventType: 'mr_ready_to_merge',
-        projectId: doc.projectId,
-        mrIid: doc.iid,
-      });
-    } else {
-      console.warn('[merge-request] Cannot notify author about merge readiness');
-    }
-    await updateMergeRequest(doc.projectId, doc.iid, { authorMergeNotified: true });
-  }
+  await notifyMergeRequestApprovals(bot, doc);
 
   await runGameAction(`readiness ${doc.projectId}/${doc.iid}`, async () => {
     await syncMergeRequestGameReadiness(

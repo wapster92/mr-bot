@@ -29,9 +29,11 @@ export type MergeRequestDocument = {
   isDraft?: boolean;
   reviewers?: string[];
   reviewerLabels?: string[];
+  approvalRequestedAt?: Record<string, Date>;
   approvedBy?: string[];
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
+  finalReviewNotifiedFor?: string[];
   authorMergeNotified?: boolean;
   gameStartedAt?: Date;
   gameLintFailed?: boolean;
@@ -41,6 +43,7 @@ export type MergeRequestDocument = {
   reviewersSyncedAt?: Date;
   reviewersSyncFailedAt?: Date;
   reviewersSyncError?: string;
+  reviewerLabelsCleanupPending?: boolean;
 };
 
 const COLLECTION_NAME = 'merge_requests';
@@ -63,7 +66,7 @@ export const upsertMergeRequest = async (doc: MergeRequestDocument): Promise<voi
 
 export const findMergeRequest = async (projectId: number, iid: number): Promise<MergeRequestDocument | null> => {
   const collection = await getCollection();
-  return collection.findOne({ projectId, iid });
+  return collection.findOne({ projectId, iid }, { projection: { _id: 0 } });
 };
 
 export const findMergeRequestByBranch = async (
@@ -179,8 +182,10 @@ export const listOpenMergeRequests = async (): Promise<MergeRequestDocument[]> =
   const collection = await getCollection();
   return collection
     .find({
-      $and: [
-        { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
+      $or: [
+        { state: { $exists: false } },
+        { state: { $nin: ['merged', 'closed'] } },
+        { reviewerLabelsCleanupPending: true },
       ],
     })
     .sort({ updatedAt: -1 })

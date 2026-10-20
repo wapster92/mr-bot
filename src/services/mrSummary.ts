@@ -1,10 +1,15 @@
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
 import { escapeHtml, formatGitlabUserLabel } from '../messages/format';
+import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { summarizeMergeRequestApprovals } from './approvalPolicy';
 
 export const buildMergeRequestMessages = async (
   mergeRequests: MergeRequestDocument[],
 ): Promise<string[]> => {
   const messages: string[] = [];
+  const [leads, activeReviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
+  const leadUsernames = new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase()));
+  const reviewerUsernames = new Set(activeReviewers.map((name) => name.toLowerCase()));
 
   for (const mr of mergeRequests) {
     const reviewers = mr.reviewers ?? [];
@@ -15,7 +20,8 @@ export const buildMergeRequestMessages = async (
     const approvedLabels = approvedBy.length
       ? await Promise.all(approvedBy.map((approver) => formatGitlabUserLabel(approver)))
       : [];
-    const pendingReviewers = reviewers.filter((reviewer) => !approvedBy.includes(reviewer));
+    const approvedSet = new Set(approvedBy.map((name) => name.toLowerCase()));
+    const pendingReviewers = reviewers.filter((reviewer) => !approvedSet.has(reviewer.toLowerCase()));
     const pendingLabels = pendingReviewers.length
       ? await Promise.all(pendingReviewers.map((reviewer) => formatGitlabUserLabel(reviewer)))
       : [];
@@ -26,28 +32,12 @@ export const buildMergeRequestMessages = async (
       mr.author.name,
     );
 
-    const approvalsRequired =
-      typeof mr.approvalsRequired === 'number' ? mr.approvalsRequired : undefined;
-    const approvalsLeft = typeof mr.approvalsLeft === 'number' ? mr.approvalsLeft : undefined;
-    const approvalsGiven =
-      approvalsRequired !== undefined && approvalsLeft !== undefined
-        ? Math.max(approvalsRequired - approvalsLeft, 0)
-        : undefined;
-    const approvalsFromReviewers =
-      approvalsRequired === undefined && approvalsLeft === undefined && reviewers.length
-        ? `${Math.min(approvedBy.length, reviewers.length)}/${reviewers.length}`
-        : undefined;
-    const approvalsLine =
-      approvalsRequired === 0 && approvalsLeft === 0
-        ? 'Апрувы: не требуются'
-        : approvalsRequired !== undefined && approvalsLeft !== undefined
-        ? `Апрувы: ${approvalsGiven}/${approvalsRequired} (осталось ${Math.max(
-            approvalsLeft,
-            0,
-          )})`
-        : approvalsFromReviewers
-        ? `Апрувы: ${approvalsFromReviewers}`
-        : 'Апрувы: нет данных';
+    const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames);
+    const approvalsLine = `Апрувы: ревьюер ${Math.min(summary.developerApprovers.length, 1)}/1, ` +
+      `лиды ${summary.leadApprovers.length}/${summary.requiredLeadCount}`;
+    const pendingLeadLabels = await Promise.all(
+      summary.pendingLeadUsernames.map((username) => formatGitlabUserLabel(username)),
+    );
     const approvedLine = approvedLabels.length
       ? `Апрувнули: ${approvedLabels.join(', ')}`
       : 'Апрувнули: —';
@@ -62,6 +52,7 @@ export const buildMergeRequestMessages = async (
       approvalsLine,
       approvedLine,
       pendingLine,
+      `Лиды без апрува: ${pendingLeadLabels.join(', ') || '—'}`,
       `Ревьюеры: ${reviewerNames}`,
       `Линт: ${escapeHtml(mr.lastLintStatus ?? 'не запускался')}`,
       escapeHtml(mr.url),
