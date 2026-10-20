@@ -1,16 +1,23 @@
 import assert from 'node:assert/strict';
-import { before, describe, it } from 'node:test';
+import { afterEach, before, beforeEach, describe, it } from 'node:test';
+import type { MergeRequestDocument } from '../src/data/mergeRequestRepository';
+import type { UserRecord } from '../src/data/userTypes';
 
 type StoredEvent = {
   eventKey: string;
   commentSlotKey?: string;
   eventType: string;
   points: number;
-  metadata?: { assignmentKey?: string };
+  username?: string;
+  projectId?: number;
+  iid?: number;
+  metadata?: { assignmentKey?: string; discussionKey?: string };
 };
 
 const events = new Map<string, StoredEvent>();
 const commentSlots = new Set<string>();
+const userOverrides = new Map<string, Partial<UserRecord> | null>();
+let reminderReads = 0;
 const reminder = {
   projectId: 1,
   iid: 10,
@@ -61,6 +68,10 @@ before(() => {
         ).length,
       hasScoredReviewComment: async () =>
         [...events.values()].some((event) => event.eventType === 'review_comment'),
+      hasScoredReviewDiscussion: async (projectId: number, iid: number, username: string, discussionKey: string) =>
+        [...events.values()].some((event) => event.eventType === 'review_comment' &&
+          event.projectId === projectId && event.iid === iid &&
+          event.username?.toLowerCase() === username.toLowerCase() && event.metadata?.discussionKey === discussionKey),
     },
   } as NodeJS.Module;
   require.cache[reminderRepositoryPath] = {
@@ -68,7 +79,10 @@ before(() => {
     filename: reminderRepositoryPath,
     loaded: true,
     exports: {
-      ensureReviewReminderGameStarted: async () => reminder,
+      ensureReviewReminderGameStarted: async (projectId: number, iid: number, username: string) => {
+        reminderReads += 1;
+        return { ...reminder, projectId, iid, reviewerUsername: username, reviewerUsernameLower: username.toLowerCase() };
+      },
     },
   } as NodeJS.Module;
   require.cache[userStorePath] = {
@@ -76,12 +90,13 @@ before(() => {
     filename: userStorePath,
     loaded: true,
     exports: {
-      getUserByGitlabUsername: async (username: string) => ({
-        gitlabUsername: username,
-        isAllowed: true,
-        isActive: true,
-        isLead: username === 'tech.lead',
-      }),
+      getUserByGitlabUsername: async (username: string) => {
+        const overrides = userOverrides.get(username.toLowerCase());
+        return overrides === null ? undefined : {
+          gitlabUsername: username, isAllowed: true, isActive: true,
+          isLead: username.toLowerCase() === 'tech.lead', ...overrides,
+        };
+      },
     },
   } as NodeJS.Module;
   require.cache[mergeRequestRepositoryPath] = {
@@ -94,6 +109,99 @@ before(() => {
   } as NodeJS.Module;
 
   scoring = require('../src/services/gameScoring.ts');
+});
+
+describe('assigned approval and voluntary comment rewards', () => {
+  const mr: MergeRequestDocument = {
+    projectId: 1, projectPath: 'group/project', mrId: 100, iid: 10, title: 'Test',
+    sourceBranch: 'feature', targetBranch: 'main', url: 'https://gitlab.example/mr/10',
+    author: { gitlabUsername: 'author' }, reviewers: ['reviewer.one'],
+  };
+  const occurredAt = new Date('2026-07-27T07:00:00Z');
+  const comment = (username: string, discussionKey = 'discussion', doc = mr, at = occurredAt): Promise<void> =>
+    scoring.recordReviewCommentScore({ mr: doc, reviewerUsername: username, noteId: discussionKey, discussionKey, occurredAt: at });
+  const approve = (username: string, doc = mr): Promise<void> =>
+    scoring.recordReviewApprovalScore({ mr: doc, username, occurredAt });
+
+  beforeEach(() => { events.clear(); commentSlots.clear(); userOverrides.clear(); reminderReads = 0; });
+  afterEach(() => { events.clear(); commentSlots.clear(); userOverrides.clear(); reminderReads = 0; });
+
+  it('does not pay a non-assigned approve even after the lead approved', async () => {
+    await approve('outsider', { ...mr, approvedBy: ['tech.lead'] });
+    await scoring.recordReviewUnapprovalScore({ mr, username: 'outsider', occurredAt });
+    assert.equal(events.size, 0);
+    assert.equal(reminderReads, 0);
+  });
+
+  it('pays voluntary comments only once per discussion with a three-discussion cap and no speed bonus', async () => {
+    await Promise.all(['one', 'one', 'two', 'three', 'four'].map((key) => comment('outsider', key)));
+    assert.deepEqual([...events.values()].map((event) => event.points), [20, 10, 5]);
+    assert.ok([...events.values()].every((event) => event.eventType === 'review_comment'));
+    assert.equal(reminderReads, 0);
+    await comment('OUTSIDER', 'one');
+    assert.equal(events.size, 3);
+  });
+
+  it('does not unlock approval XP after a voluntary comment', async () => {
+    await comment('outsider'); await approve('outsider');
+    assert.deepEqual([...events.values()].map((event) => event.points), [20]);
+    assert.equal(reminderReads, 0);
+  });
+
+  it('keeps approval and first-response rewards for assigned reviewers, case-insensitively', async () => {
+    await approve('REVIEWER.ONE');
+    assert.deepEqual([...events.values()].map((event) => event.points), [30, 15]);
+  });
+
+  it('keeps the reduced lead approval reward without requiring a developer assignment', async () => {
+    await approve('TECH.LEAD');
+    assert.deepEqual([...events.values()].map((event) => event.points), [10]);
+  });
+
+  it('does not pay approval to a former assignee but still pays their voluntary comment', async () => {
+    const reassigned = { ...mr, reviewers: [] };
+    await approve('reviewer.one', reassigned);
+    await comment('reviewer.one', 'discussion', reassigned);
+    assert.deepEqual([...events.values()].map((event) => event.points), [20]);
+    assert.equal(reminderReads, 0);
+  });
+
+  it('allows author-only users to help with comments, never approval XP or response bonuses', async () => {
+    userOverrides.set('outsider', { isReviewer: false });
+    await comment('outsider'); await approve('outsider', { ...mr, reviewers: ['outsider'] });
+    assert.deepEqual([...events.values()].map((event) => event.points), [20]);
+    assert.equal(reminderReads, 0);
+  });
+
+  it('does not pay the same discussion again after a volunteer becomes assigned', async () => {
+    const beforeAssignment = new Date('2026-07-27T05:00:00Z');
+    await comment('reviewer.one', 'shared', { ...mr, reviewers: [] }, beforeAssignment);
+    await comment('reviewer.one', 'shared', mr, beforeAssignment);
+    assert.deepEqual([...events.values()].map((event) => event.points), [20]);
+  });
+
+  it('does not pay the same discussion again when an assignee becomes a volunteer', async () => {
+    await comment('reviewer.one');
+    const initialCount = events.size;
+    await comment('reviewer.one', 'discussion', { ...mr, reviewers: [] });
+    assert.equal(events.size, initialCount);
+  });
+
+  for (const override of [{ isActive: false }, { isAllowed: false }, null]) {
+    it(`rejects unavailable participants: ${JSON.stringify(override)}`, async () => {
+      userOverrides.set('outsider', override);
+      await comment('outsider'); await approve('outsider', { ...mr, reviewers: ['outsider'] });
+      assert.equal(events.size, 0);
+    });
+  }
+
+  for (const update of [{ isDraft: true }, { state: 'closed' }, { state: 'merged' }, { author: { gitlabUsername: 'outsider' } }]) {
+    it(`does not pay voluntary comments or approval for ${JSON.stringify(update)}`, async () => {
+      const doc = { ...mr, ...update };
+      await comment('outsider', 'discussion', doc); await approve('outsider', doc);
+      assert.equal(events.size, 0);
+    });
+  }
 });
 
 describe('game scoring idempotency', () => {

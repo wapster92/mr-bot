@@ -166,6 +166,19 @@ export const countReviewCommentScores = async (
   });
 };
 
+export const hasScoredReviewDiscussion = async (
+  projectId: number,
+  iid: number,
+  username: string,
+  discussionKey: string,
+): Promise<boolean> => {
+  const collection = await getCollection();
+  return Boolean(await collection.findOne({
+    projectId, iid, usernameLower: username.toLowerCase(), eventType: 'review_comment',
+    'metadata.discussionKey': discussionKey,
+  }, { projection: { _id: 1 } }));
+};
+
 export const hasScoredReviewComment = async (
   projectId: number,
   iid: number,

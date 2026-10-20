@@ -81,7 +81,7 @@ const handleNoteEventUnlocked = async (payload: any, bot: Telegraf<BotContext>):
   }
   if (
     commenter &&
-    isReviewParticipant &&
+    commenterUser && commenterUser.isActive !== false && commenterUser.isAllowed !== false &&
     isNewHumanComment &&
     noteId !== undefined &&
     discussionKey !== undefined

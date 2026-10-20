@@ -22,6 +22,7 @@ let historicalNotes: Array<{ authorUsername: string; system: boolean }> = [];
 let noteReads = 0;
 let apiReads = 0;
 let sent: number[] = [];
+let scoredCommenters: string[] = [];
 const bot = { telegram: { sendMessage: async (chatId: number) => { sent.push(chatId); } } } as unknown as Telegraf<BotContext>;
 
 const mockModule = (relative: string, exports: unknown): void => {
@@ -60,7 +61,8 @@ before(() => {
   });
   mockModule('../src/gitlab/handlers/common.ts', { persistGitlabUserProfileFromPayload: async () => {} });
   mockModule('../src/services/gameScoring.ts', {
-    recordReviewCommentScore: async () => {}, recordAuthorChangesScore: async () => {},
+    recordReviewCommentScore: async (input: { reviewerUsername: string }) => { scoredCommenters.push(input.reviewerUsername); },
+    recordAuthorChangesScore: async () => {},
     runGameAction: async (_name: string, action: () => Promise<void>) => action(),
   });
   mockModule('../src/services/reviewReminderService.ts', { markReviewCompletedForReviewer: async () => {} });
@@ -101,7 +103,7 @@ beforeEach(() => {
     isLead: name.endsWith('.lead'), isActive: true, isAllowed: true,
   }));
   queued = []; withinHours = true; approvals = []; approvalApiAvailable = true;
-  historicalNotes = []; noteReads = 0; apiReads = 0; sent = [];
+  historicalNotes = []; noteReads = 0; apiReads = 0; sent = []; scoredCommenters = [];
 });
 
 const comment = (username: string, extra: Record<string, unknown> = {}): Promise<void> => notes.handleNoteEvent({
@@ -117,6 +119,26 @@ const push = (sha = 'sha-1', extra: Record<string, unknown> = {}): Promise<void>
 const pushMessages = (): NotificationQueueDocument[] => queued.filter((item) => item.eventType === 'mr_push');
 
 describe('updates after reviewer and lead comments', () => {
+  it('scores a voluntary code comment without assigning or subscribing the commenter', async () => {
+    await comment('outsider', { type: 'DiffNote' });
+    assert.deepEqual(scoredCommenters, ['outsider']);
+    assert.deepEqual(mr.reviewers, ['reviewer.one', 'reviewer.two']);
+    assert.equal(mr.reviewCommenters, undefined);
+    await push();
+    assert.equal(pushMessages().length, 0);
+  });
+
+  it('does not score voluntary system, edited or deleted notes or comments by unavailable users', async () => {
+    await comment('outsider', { system: true });
+    await comment('outsider', { action: 'update' });
+    await comment('outsider', { action: 'delete' });
+    await comment('author');
+    users[5]!.isActive = false; await comment('outsider');
+    users[5]!.isActive = true; users[5]!.isAllowed = false; await comment('outsider');
+    await comment('unknown');
+    assert.deepEqual(scoredCommenters, []);
+  });
+
   it('notifies a commenting reviewer and lead, but not silent reviewers, author or outsiders', async () => {
     await Promise.all([comment('reviewer.one'), comment('tech.lead')]);
     await comment('outsider'); await comment('author');

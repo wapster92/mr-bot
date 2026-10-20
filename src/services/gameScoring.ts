@@ -9,6 +9,7 @@ import {
   countReviewCommentScores,
   findScoreEvent,
   hasScoredReviewComment,
+  hasScoredReviewDiscussion,
   hasScoreEvent,
 } from '../data/scoreEventRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
@@ -27,7 +28,7 @@ import {
 } from './gameRules';
 
 const scoreLocks = new Map<string, Promise<void>>();
-type ScoringReviewReminder = ReviewReminderDocument;
+type ScoringReviewReminder = ReviewReminderDocument & { isVoluntaryReview?: boolean };
 
 export const runGameAction = async (
   label: string,
@@ -64,14 +65,12 @@ const isScoringUserAvailable = async (username: string): Promise<boolean> => {
   return Boolean(user && user.isActive !== false);
 };
 
-const isScoringReviewerAvailable = async (username: string): Promise<boolean> => {
-  const user = await getUserByGitlabUsername(username);
-  return Boolean(user && isScoringReviewParticipant(user));
-};
-
 const isScoringReviewParticipant = (user: UserRecord): boolean =>
   user.isAllowed !== false && user.isActive !== false &&
   (user.isLead === true || isReviewerEnabled(user));
+
+const isAssignedReviewer = (mr: MergeRequestDocument, username: string): boolean =>
+  Boolean(mr.reviewers?.some((reviewer) => reviewer.toLowerCase() === username.toLowerCase()));
 
 const getTrackingStart = (reminder: ReviewReminderDocument): Date => {
   const gameStartedAt = reminder.gameStartedAt ?? reminder.assignedAt;
@@ -80,26 +79,23 @@ const getTrackingStart = (reminder: ReviewReminderDocument): Date => {
 
 export const buildReviewAssignmentKey = (
   reminder: ScoringReviewReminder,
-): string =>
-  reminder.isLeadReview
-    ? `${reminder.projectId}:${reminder.iid}:${reminder.reviewerUsernameLower}:lead`
-    : [
-        reminder.projectId,
-        reminder.iid,
-        reminder.reviewerUsernameLower,
-        reminder.assignedAt.toISOString(),
-        getTrackingStart(reminder).toISOString(),
-      ].join(':');
+): string => {
+  const prefix = `${reminder.projectId}:${reminder.iid}:${reminder.reviewerUsernameLower}`;
+  if (reminder.isLeadReview) return `${prefix}:lead`;
+  if (reminder.isVoluntaryReview) return `${prefix}:voluntary`;
+  return [prefix, reminder.assignedAt.toISOString(), getTrackingStart(reminder).toISOString()].join(':');
+};
 
 const getReviewReminder = async (
   mr: MergeRequestDocument,
   reviewerUsername: string,
   occurredAt: Date,
+  user: UserRecord,
 ): Promise<ScoringReviewReminder | null> => {
-  const user = await getUserByGitlabUsername(reviewerUsername);
-  if (user?.isLead) {
-    // A stable key limits paid lead discussions without creating regular
-    // reviewer reminders or making the lead eligible for reviewer assignment.
+  const voluntary = !user.isLead && (!isReviewerEnabled(user) || !isAssignedReviewer(mr, reviewerUsername));
+  if (user.isLead || voluntary) {
+    // Stable budgets for leads and volunteers without creating assignment
+    // reminders. Voluntary comments never start response timers or penalties.
     const assignedAt = mr.gameStartedAt ?? mr.createdAt ?? occurredAt;
     return {
       projectId: mr.projectId,
@@ -108,7 +104,7 @@ const getReviewReminder = async (
       reviewerUsernameLower: reviewerUsername.toLowerCase(),
       assignedAt,
       reminderCount: 0,
-      isLeadReview: true,
+      ...(user.isLead ? { isLeadReview: true } : { isVoluntaryReview: true }),
     };
   }
   return ensureReviewReminderGameStarted(
@@ -123,6 +119,7 @@ const recordReviewerResponse = async (
   reminder: ScoringReviewReminder,
   occurredAt: Date,
 ): Promise<void> => {
+  if (reminder.isVoluntaryReview || occurredAt < getTrackingStart(reminder)) return;
   const user = await getUserByGitlabUsername(reminder.reviewerUsername);
   if (!user || !isScoringReviewParticipant(user) || user.isLead) {
     return;
@@ -159,29 +156,32 @@ export const recordReviewCommentScore = async (input: {
 }): Promise<void> => {
   const lockKey = `comment:${input.mr.projectId}:${input.mr.iid}:${input.reviewerUsername.toLowerCase()}`;
   await withScoreLock(lockKey, async () => {
+    const user = await getUserByGitlabUsername(input.reviewerUsername);
     if (input.mr.isDraft || ['closed', 'merged'].includes(input.mr.state ?? '') ||
       input.mr.author.gitlabUsername?.toLowerCase() === input.reviewerUsername.toLowerCase() ||
-      !(await isScoringReviewerAvailable(input.reviewerUsername))) {
+      !user || user.isActive === false || user.isAllowed === false) {
       return;
     }
     const reminder = await getReviewReminder(
       input.mr,
       input.reviewerUsername,
       input.occurredAt,
+      user,
     );
     if (!reminder) {
       return;
     }
     const assignmentKey = buildReviewAssignmentKey(reminder);
-    const user = await getUserByGitlabUsername(input.reviewerUsername);
     const eventKey =
       `review:comment:${assignmentKey}:` + input.discussionKey;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (await hasScoreEvent(eventKey)) {
+      if (await hasScoreEvent(eventKey) || await hasScoredReviewDiscussion(
+        input.mr.projectId, input.mr.iid, input.reviewerUsername, input.discussionKey,
+      )) {
         break;
       }
       const scoredComments = await countReviewCommentScores(assignmentKey);
-      const points = getReviewCommentPoints(scoredComments, user?.isLead === true);
+      const points = getReviewCommentPoints(scoredComments, user.isLead === true);
       if (points === undefined) {
         break;
       }
@@ -222,7 +222,8 @@ export const recordReviewApprovalScore = async (input: {
   if (
     input.mr.isDraft || ['closed', 'merged'].includes(input.mr.state ?? '') ||
     input.mr.author.gitlabUsername?.toLowerCase() === input.username.toLowerCase() ||
-    !(await isScoringReviewerAvailable(input.username))
+    !approver || !isScoringReviewParticipant(approver) ||
+    (!approver.isLead && !isAssignedReviewer(input.mr, input.username))
   ) {
     return;
   }
@@ -231,26 +232,21 @@ export const recordReviewApprovalScore = async (input: {
     username: input.username,
     category: 'review',
     eventType: 'review_approved',
-    points: approver?.isLead ? LEAD_GAME_POINTS.reviewApprove : GAME_POINTS.reviewApprove,
+    points: approver.isLead ? LEAD_GAME_POINTS.reviewApprove : GAME_POINTS.reviewApprove,
     projectId: input.mr.projectId,
     iid: input.mr.iid,
     occurredAt: input.occurredAt,
     description: 'Approve MR',
   });
 
-  if (approver?.isLead ||
-    input.mr.reviewers?.some(
-      (reviewer) => reviewer.toLowerCase() === input.username.toLowerCase(),
-    )
-  ) {
-    const reminder = await getReviewReminder(
-      input.mr,
-      input.username,
-      input.occurredAt,
-    );
-    if (reminder) {
-      await recordReviewerResponse(reminder, input.occurredAt);
-    }
+  const reminder = await getReviewReminder(
+    input.mr,
+    input.username,
+    input.occurredAt,
+    approver,
+  );
+  if (reminder) {
+    await recordReviewerResponse(reminder, input.occurredAt);
   }
 };
 
