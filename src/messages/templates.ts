@@ -44,6 +44,22 @@ export const buildFinalReviewMessage = (input: MergeRequestMessageInput): string
   return parts.filter(Boolean).join('\n');
 };
 
+export const buildMergeApprovalAlertMessage = (
+  input: MergeRequestMessageInput & {
+    mergerLabel: string;
+    missingApprovals: string[];
+    unverified: boolean;
+  },
+): string => {
+  const header = input.unverified
+    ? `⚠️ MR «${escapeHtml(input.title)}» слит, но подтвердить полный набор апрувов не удалось: GitLab API временно недоступен.`
+    : `⚠️ MR «${escapeHtml(input.title)}» слит без полного набора апрувов.`;
+  const parts = buildMrParts(input, header);
+  parts.splice(1, 0, `Выполнил слияние: ${input.mergerLabel}.`,
+    ...input.missingApprovals.map((reason) => `• ${escapeHtml(reason)}.`));
+  return parts.join('\n');
+};
+
 export const buildMergeReadyForAuthorMessage = (input: MergeRequestMessageInput): string => {
   const header = `✅ MR "${escapeHtml(input.title)}" получил нужные апрувы. Можно сливать.`;
   const parts = buildMrParts(input, header);

@@ -8,12 +8,13 @@ const HISTORY_RETRY_INTERVAL_MS = 2 * 60 * 1000;
 // volunteers; periodic refresh also recovers comments whose webhook was missed.
 export const loadReviewCommentHistory = async (
   mr: MergeRequestDocument,
+  options: { mergeAudit?: boolean } = {},
 ): Promise<Partial<MergeRequestDocument>> => {
-  if (['closed', 'merged'].includes(mr.state ?? '')) return {};
+  if (!options.mergeAudit && ['closed', 'merged'].includes(mr.state ?? '')) return {};
   const now = new Date();
-  if (mr.reviewCommentHistorySyncPending && mr.reviewCommentHistoryLastAttemptAt &&
+  if (!options.mergeAudit && mr.reviewCommentHistorySyncPending && mr.reviewCommentHistoryLastAttemptAt &&
     now.getTime() - mr.reviewCommentHistoryLastAttemptAt.getTime() < HISTORY_RETRY_INTERVAL_MS) return {};
-  if (mr.reviewCommentRequirementsSyncedAt && !mr.reviewCommentHistorySyncPending &&
+  if (!options.mergeAudit && mr.reviewCommentRequirementsSyncedAt && !mr.reviewCommentHistorySyncPending &&
     now.getTime() - mr.reviewCommentRequirementsSyncedAt.getTime() < HISTORY_SYNC_INTERVAL_MS) return {};
   const notes = await fetchMergeRequestNotes(mr.projectId, mr.iid);
   if (!notes) return { reviewCommentHistorySyncPending: true, reviewCommentHistoryLastAttemptAt: now };

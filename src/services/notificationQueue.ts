@@ -95,7 +95,11 @@ const deliverQueuedNotification = async (
     );
     return;
   }
-  const withinHours = isWithinWorkingHours(user, now);
+  if (item.eventType === 'mr_merged_without_approval' && user.isLead !== true) {
+    if (item._id) await markNotificationCancelled(item._id, 'Пользователь больше не является лидом', now);
+    return;
+  }
+  const withinHours = item.ignoreWorkHours === true || isWithinWorkingHours(user, now);
   const obsolete = await notificationObsolete(item, user, leadUsernames, reviewerUsernames, commenterUsernames, withinHours);
   if (obsolete === 'defer') return;
   if (obsolete) {

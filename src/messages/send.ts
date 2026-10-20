@@ -14,6 +14,7 @@ export type NotificationMeta = {
   mrId?: number;
   dedupeId?: string;
   dedupeKeyOverride?: string;
+  ignoreWorkHours?: boolean;
 };
 
 const buildMrKey = (meta?: NotificationMeta): string | undefined => {
@@ -76,12 +77,13 @@ export const deliverHtmlMessage = async (
       ...(recipient.telegramUsername ? { telegramUsername: recipient.telegramUsername } : {}),
       ...(recipient.gitlabUsername ? { gitlabUsername: recipient.gitlabUsername } : {}),
       ...(meta?.eventType ? { eventType: meta.eventType } : {}),
+      ...(meta?.ignoreWorkHours ? { ignoreWorkHours: true } : {}),
       ...(mrKey ? { mrKey } : {}),
       ...(dedupeKey ? { dedupeKey } : {}),
       text,
       createdAt: new Date(),
     },
-    recipient.isWithinHours ? 'processing' : 'pending',
+    recipient.isWithinHours || meta?.ignoreWorkHours ? 'processing' : 'pending',
   );
   if (!notification.shouldSend) {
     return;

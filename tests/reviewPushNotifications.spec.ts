@@ -13,6 +13,8 @@ let pushes: typeof import('../src/gitlab/handlers/push');
 let notifications: typeof import('../src/services/notificationQueue');
 let policy: typeof import('../src/services/pushReviewNotifications');
 let approvalMessages: typeof import('../src/services/approvalNotifications');
+let delivery: typeof import('../src/messages/send');
+let recipients: typeof import('../src/messages/recipients');
 let mr: MergeRequestDocument;
 let users: UserRecord[];
 let queued: NotificationQueueDocument[];
@@ -94,6 +96,75 @@ before(() => {
   notifications = require('../src/services/notificationQueue.ts');
   policy = require('../src/services/pushReviewNotifications.ts');
   approvalMessages = require('../src/services/approvalNotifications.ts');
+  delivery = require('../src/messages/send.ts');
+  recipients = require('../src/messages/recipients.ts');
+});
+
+describe('urgent merge audit delivery', () => {
+  const alert = async (): Promise<void> => delivery.deliverHtmlMessageToRecipients(
+    bot, await recipients.getLeadRecipients(), 'MR слит без обязательных апрувов', {
+      eventType: 'mr_merged_without_approval', projectId: 1, mrIid: 1,
+      dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
+    },
+  );
+
+  it('delivers immediately outside working hours, including a weekend, and deduplicates repeats', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-24T22:00:00Z') });
+    withinHours = false; mr.state = 'merged';
+    await alert(); await alert();
+    assert.deepEqual(sent, [4, 5]);
+    assert.equal(queued.length, 2);
+    assert.ok(queued.every((item) => item.status === 'delivered' && item.ignoreWorkHours));
+  });
+
+  it('preserves the bypass when recovering an interrupted delivery outside working hours', async () => {
+    withinHours = false; mr.state = 'merged';
+    await alert();
+    sent = [];
+    // Simulate the repository returning stale processing leases for retry.
+    for (const item of queued) item.status = 'pending';
+    await notifications.flushNotificationQueue(bot);
+    assert.deepEqual(sent, [4, 5]);
+    assert.ok(queued.every((item) => item.status === 'delivered'));
+  });
+
+  it('does not deliver queued alerts to removed, paused, forbidden or former leads', async () => {
+    for (const change of ['removed', 'paused', 'forbidden', 'former']) {
+      users[3] = { gitlabUsername: 'tech.lead', telegramUsername: 'tech.lead', chatId: 4,
+        isLead: true, isActive: true, isAllowed: true };
+      queued = []; sent = []; withinHours = false;
+      await alert(); sent = [];
+      const target = queued.find((item) => item.chatId === 4)!;
+      target.status = 'pending';
+      if (change === 'removed') users.splice(3, 1);
+      else if (change === 'paused') users[3]!.isActive = false;
+      else if (change === 'forbidden') users[3]!.isAllowed = false;
+      else users[3]!.isLead = false;
+      await notifications.flushNotificationQueue(bot);
+      assert.equal(target.status, 'cancelled', change);
+      assert.deepEqual(sent, [], change);
+    }
+  });
+
+  it('does not enqueue urgent alerts for unavailable leads in the first place', async () => {
+    users[3]!.isActive = false; users[4]!.isAllowed = false;
+    await alert();
+    assert.deepEqual(queued, []);
+    assert.deepEqual(sent, []);
+  });
+
+  it('keeps ordinary merge messages pending until working hours', async () => {
+    withinHours = false;
+    await delivery.deliverHtmlMessageToRecipients(bot, await recipients.getLeadRecipients(), 'MR слит', {
+      eventType: 'mr_closed', projectId: 1, mrIid: 1, dedupeId: 'merge',
+    });
+    assert.deepEqual(sent, []);
+    assert.ok(queued.every((item) => item.status === 'pending' && !item.ignoreWorkHours));
+    await notifications.flushNotificationQueue(bot);
+    assert.deepEqual(sent, []);
+    withinHours = true; await notifications.flushNotificationQueue(bot);
+    assert.deepEqual(sent, [4, 5]);
+  });
 });
 
 beforeEach(() => {

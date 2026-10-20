@@ -17,6 +17,7 @@ export type NotificationQueueDocument = {
   telegramUsername?: string;
   gitlabUsername?: string;
   eventType?: string;
+  ignoreWorkHours?: boolean;
   mrKey?: string;
   dedupeKey?: string;
   deliveryKey?: string;

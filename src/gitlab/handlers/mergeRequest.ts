@@ -9,6 +9,7 @@ import { formatGitlabUserLabel } from '../../messages/format';
 import {
   buildMergeRequestClosedMessage,
   buildMergeRequestCreatedMessage,
+  buildMergeApprovalAlertMessage,
 } from '../../messages/templates';
 import { deliverHtmlMessageToRecipients } from '../../messages/send';
 import {
@@ -37,6 +38,7 @@ import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
 import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
 import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
+import { auditMergeApprovals } from '../../services/mergeApprovalAudit';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -98,6 +100,8 @@ const handleMergeRequestEventUnlocked = async (
   if (apiMergeRequest || apiApprovals) {
     const apiUsers = [
       apiMergeRequest?.author,
+      apiMergeRequest?.merge_user,
+      apiMergeRequest?.merged_by,
       ...(apiApprovals?.approved_by ?? []).map((item) => item.user ?? {}),
     ];
     await persistGitlabUserProfiles(
@@ -278,6 +282,12 @@ const handleMergeRequestEventUnlocked = async (
   }
 
   Object.assign(doc, await loadReviewCommentHistory(doc));
+  if (attrs.action === 'merge') {
+    // merge_user identifies the person responsible for an auto-merge as well.
+    // Older GitLab versions expose only merged_by; the webhook actor is the fallback.
+    const merger = apiMergeRequest?.merge_user ?? apiMergeRequest?.merged_by ?? payload.user ?? {};
+    doc.mergeApprovalAudit = await auditMergeApprovals(doc, merger, Array.isArray(apiApprovals?.approved_by));
+  }
   const reviewerState = await reconcileReviewersForMr(doc, apiMergeRequest?.labels);
   doc.reviewers = reviewerState.reviewers;
   doc.reviewerLabels = reviewerState.reviewerLabels;
@@ -386,7 +396,22 @@ const handleMergeRequestEventUnlocked = async (
       );
     }
     await clearMergeRequestGameReady(doc.projectId, doc.iid);
-    const closerName = await formatGitlabUserLabel(payload.user?.username, payload.user?.name);
+    const audit = attrs.action === 'merge' ? doc.mergeApprovalAudit : undefined;
+    const closerName = await formatGitlabUserLabel(
+      audit?.mergerUsername ?? payload.user?.username, audit?.mergerName ?? payload.user?.name,
+    );
+    const leadRecipients = await getLeadRecipients();
+    const needsMergeAlert = audit?.status === 'missing_approvals' || audit?.status === 'unverified';
+    if (needsMergeAlert) {
+      await deliverHtmlMessageToRecipients(bot, leadRecipients, buildMergeApprovalAlertMessage({
+        title: doc.title ?? '—', url: doc.url ?? '—', taskUrl: doc.taskUrl,
+        mergerLabel: closerName, missingApprovals: audit.missingApprovals,
+        unverified: audit.status === 'unverified',
+      }), {
+        eventType: 'mr_merged_without_approval', projectId: doc.projectId, mrIid: doc.iid,
+        dedupeId: 'merge-audit-v1', ignoreWorkHours: true,
+      });
+    }
     const originalAuthorName = await formatGitlabUserLabel(
       doc.author.gitlabUsername,
       doc.author.name,
@@ -403,11 +428,15 @@ const handleMergeRequestEventUnlocked = async (
     const authorRecipient = doc.author.gitlabUsername
       ? await getRecipientByGitlabUsername(doc.author.gitlabUsername)
       : undefined;
+    const authorAlreadyAlerted = needsMergeAlert && authorRecipient && leadRecipients.some((lead) =>
+      (lead.chatId !== undefined && lead.chatId === authorRecipient.chatId) ||
+      (lead.gitlabUsername && lead.gitlabUsername.toLowerCase() === authorRecipient.gitlabUsername?.toLowerCase()),
+    );
     const recipients = [
-      ...(await getLeadRecipients()),
-      ...(authorRecipient ? [authorRecipient] : []),
+      ...(needsMergeAlert ? [] : leadRecipients),
+      ...(authorRecipient && !authorAlreadyAlerted ? [authorRecipient] : []),
     ];
-    const notificationId = `${attrs.action}:${attrs.updated_at ?? ''}`;
+    const notificationId = attrs.action === 'merge' ? 'merge' : `${attrs.action}:${attrs.updated_at ?? ''}`;
     await deliverHtmlMessageToRecipients(bot, recipients, message, {
       eventType: 'mr_closed',
       projectId: doc.projectId,

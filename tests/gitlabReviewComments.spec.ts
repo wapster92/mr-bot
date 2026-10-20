@@ -21,6 +21,8 @@ before(() => {
       MergeRequests = {
         show: async () => ({
           state: 'closed', closed_at: '2026-09-01T09:00:00Z', merged_at: '2026-09-02T09:00:00Z',
+          merge_user: { id: 1, username: 'actual.merger', name: 'Merger' },
+          merged_by: { id: 2, username: 'legacy.merger', name: 'Legacy' },
         }),
       };
       MergeRequestDiscussions = {
@@ -60,6 +62,12 @@ describe('GitLab review comment history', () => {
       { authorUsername: 'system', system: true },
     ]);
     assert.deepEqual(calls, [[1, 2, { perPage: 100 }]]);
+  });
+
+  it('preserves both the actual merger and the legacy merger field', async () => {
+    const mr = await api.fetchMergeRequest(1, 2);
+    assert.deepEqual(mr?.merge_user, { id: 1, username: 'actual.merger', name: 'Merger' });
+    assert.deepEqual(mr?.merged_by, { id: 2, username: 'legacy.merger', name: 'Legacy' });
   });
 
   it('does not treat an API error as successfully loaded empty history', async () => {

@@ -9,6 +9,8 @@ type GitlabUser = {
 
 export type GitlabMergeRequest = {
   author?: GitlabUser;
+  merge_user?: GitlabUser;
+  merged_by?: GitlabUser;
   labels?: string[];
   title?: string;
   description?: string;
@@ -222,6 +224,10 @@ export const fetchMergeRequest = async (
   if (author) {
     result.author = author;
   }
+  const mergeUser = toGitlabUser((response as { merge_user?: unknown }).merge_user);
+  const mergedBy = toGitlabUser(response.merged_by);
+  if (mergeUser) result.merge_user = mergeUser;
+  if (mergedBy) result.merged_by = mergedBy;
   if (Array.isArray(response.labels)) {
     result.labels = response.labels.filter((label: unknown): label is string => typeof label === 'string');
   }

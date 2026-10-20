@@ -1,6 +1,13 @@
 import type { Collection, Filter } from 'mongodb';
 import { getDb } from '../db/mongo';
 
+export type MergeApprovalAudit = {
+  status: 'approved' | 'lead_override' | 'missing_approvals' | 'unverified';
+  mergerUsername?: string;
+  mergerName?: string;
+  missingApprovals: string[];
+};
+
 export type MergeRequestDocument = {
   projectId: number;
   projectPath: string;
@@ -32,6 +39,7 @@ export type MergeRequestDocument = {
   reviewerLabels?: string[];
   approvalRequestedAt?: Record<string, Date>;
   approvedBy?: string[];
+  mergeApprovalAudit?: MergeApprovalAudit;
   reviewCommenters?: string[];
   reviewCommentsSyncedAt?: Date;
   reviewCommentRequirementsSyncedAt?: Date;
