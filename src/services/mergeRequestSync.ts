@@ -17,6 +17,7 @@ import { reconcileReviewersForMr } from './reviewerAssignment';
 import { withMergeRequestLock } from './mergeRequestLock';
 import { runGameAction } from './gameScoring';
 import { syncMergeRequestGameReadiness } from './mergeReadiness';
+import { getMergeRequestFinishedAt } from './mergeRequestRetention';
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
@@ -135,6 +136,9 @@ export const syncMergeRequestFromGitlab = async (
       ...(approvals?.approved_by ?? []).flatMap((item) => item.user ? [item.user] : []),
     ]);
     const now = new Date();
+    mr.finishedAt = getMergeRequestFinishedAt(mr, stored, parseDate(
+      mr.state === 'merged' ? apiMr?.merged_at : apiMr?.closed_at,
+    ), parseDate(apiMr?.updated_at) ?? now);
     const state = await reconcileReviewersForMr(mr, apiMr?.labels, now);
     mr.reviewers = state.reviewers;
     mr.reviewerLabels = state.reviewerLabels;

@@ -1,4 +1,4 @@
-import type { Collection } from 'mongodb';
+import type { Collection, Filter } from 'mongodb';
 import { getDb } from '../db/mongo';
 
 export type MergeRequestDocument = {
@@ -25,6 +25,7 @@ export type MergeRequestDocument = {
   approvalsLeft?: number;
   updatedAt?: Date;
   createdAt?: Date;
+  finishedAt?: Date | null;
   action?: string;
   isDraft?: boolean;
   reviewers?: string[];
@@ -54,6 +55,7 @@ const getCollection = async (): Promise<Collection<MergeRequestDocument>> => {
   const db = await getDb();
   const collection = db.collection<MergeRequestDocument>(COLLECTION_NAME);
   await collection.createIndex({ projectId: 1, iid: 1 }, { unique: true });
+  await collection.createIndex({ state: 1, finishedAt: 1, updatedAt: 1 });
   return collection;
 };
 
@@ -196,8 +198,50 @@ export const listOpenMergeRequests = async (): Promise<MergeRequestDocument[]> =
 
 export const listProjectIds = async (): Promise<number[]> => {
   const collection = await getCollection();
-  const ids = await collection.distinct('projectId');
-  return ids.filter((id): id is number => typeof id === 'number');
+  const db = await getDb();
+  const ids = [
+    ...await collection.distinct('projectId'),
+    ...await db.collection('gitlab_projects').distinct('projectId'),
+  ];
+  return [...new Set(ids.filter((id): id is number => typeof id === 'number'))];
+};
+
+const expiredMergeRequestFilter = (cutoff: Date): Filter<MergeRequestDocument> => ({
+  state: { $in: ['closed', 'merged'] },
+  reviewerLabelsCleanupPending: { $ne: true },
+  $or: [
+    { finishedAt: { $type: 'date', $lte: cutoff } },
+    // Legacy records have no closure timestamp. Last modification is a
+    // conservative fallback; never use creation time to expire an MR.
+    { finishedAt: null, updatedAt: { $type: 'date', $lte: cutoff } },
+  ],
+});
+
+export const listExpiredMergeRequests = async (
+  cutoff: Date,
+  limit = 200,
+): Promise<MergeRequestDocument[]> => {
+  const collection = await getCollection();
+  return collection.find(expiredMergeRequestFilter(cutoff))
+    .limit(limit)
+    .toArray();
+};
+
+export const deleteExpiredMergeRequest = async (
+  projectId: number,
+  iid: number,
+  cutoff: Date,
+): Promise<boolean> => {
+  const collection = await getCollection();
+  // Backfill discovers projects from stored MRs. Keep the project ID even
+  // after its last completed MR is removed, without retaining the whole MR.
+  const db = await getDb();
+  await db.collection<{ _id: string; projectId: number }>('gitlab_projects').updateOne(
+    { _id: String(projectId) }, { $setOnInsert: { projectId } }, { upsert: true },
+  );
+  // Recheck all conditions in the atomic delete, not only in the earlier scan.
+  const result = await collection.deleteOne({ projectId, iid, ...expiredMergeRequestFilter(cutoff) });
+  return result.deletedCount === 1;
 };
 
 export const listPendingReviewsForReviewer = async (

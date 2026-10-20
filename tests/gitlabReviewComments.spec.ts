@@ -18,6 +18,11 @@ before(() => {
   });
   mockModule('@gitbeaker/rest', {
     Gitlab: class {
+      MergeRequests = {
+        show: async () => ({
+          state: 'closed', closed_at: '2026-09-01T09:00:00Z', merged_at: '2026-09-02T09:00:00Z',
+        }),
+      };
       MergeRequestDiscussions = {
         all: async (...args: unknown[]) => {
           calls.push(args);
@@ -41,6 +46,12 @@ before(() => {
 });
 
 describe('GitLab review comment history', () => {
+  it('preserves terminal dates returned by GitLab for MR retention', async () => {
+    const mr = await api.fetchMergeRequest(1, 2);
+    assert.equal(mr?.closed_at, '2026-09-01T09:00:00Z');
+    assert.equal(mr?.merged_at, '2026-09-02T09:00:00Z');
+  });
+
   it('reads ordinary, inline and thread comments through the paginated Discussions API', async () => {
     assert.deepEqual(await api.fetchMergeRequestNotes(1, 2), [
       { authorUsername: 'reviewer', system: false },

@@ -15,6 +15,7 @@ import { withMergeRequestLock } from '../../services/mergeRequestLock';
 import { getUserByGitlabUsername } from '../../data/userStore';
 import { fetchMergeRequest, fetchMergeRequestApprovals, fetchMergeRequestNotes } from '../api';
 import { shouldNotifyReviewUpdate } from '../../services/pushReviewNotifications';
+import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -72,6 +73,9 @@ const handlePushEventUnlocked = async (
     update.reviewCommentsSyncedAt = new Date();
   }
   const current = { ...doc, ...update };
+  update.finishedAt = getMergeRequestFinishedAt(current, doc, parseDate(
+    current.state === 'merged' ? apiMr?.merged_at : apiMr?.closed_at,
+  ), parseDate(apiMr?.updated_at) ?? new Date());
   const pushedAt = parseDate(payload.event_created_at) ?? new Date();
   await updateMergeRequest(doc.projectId, doc.iid, update);
   await clearMergeRequestGameReady(doc.projectId, doc.iid);

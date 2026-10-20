@@ -22,6 +22,8 @@ export type GitlabMergeRequest = {
   draft?: boolean;
   created_at?: string;
   updated_at?: string;
+  closed_at?: string;
+  merged_at?: string;
 };
 
 export type GitlabApprovals = {
@@ -253,6 +255,8 @@ export const fetchMergeRequest = async (
   if (typeof response?.updated_at === 'string') {
     result.updated_at = response.updated_at;
   }
+  if (typeof response?.closed_at === 'string') result.closed_at = response.closed_at;
+  if (typeof response?.merged_at === 'string') result.merged_at = response.merged_at;
   return result;
 };
 

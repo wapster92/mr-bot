@@ -143,6 +143,9 @@ npm run import:users
 
 - Укажи `MONGODB_URI` и `MONGODB_DB_NAME` в `.env`.
 - Бот автоматически использует коллекции `users`, `merge_requests`, `review_reminders`, `notification_queue`, `score_events`, `review_reward_days` и связанные служебные данные.
+- Закрытые и слитые MR автоматически удаляются из базы бота через 30 дней.
+  Открытые MR, история очков и ключи защиты уведомлений от дублей сохраняются.
+  Подробности и исключения — в [правилах хранения MR](docs/review-workflow.md#хранение-и-очистка-mr).
 
 ### Игровая система
 

@@ -35,6 +35,7 @@ import {
 } from '../../services/gameScoring';
 import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
 import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
+import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -250,6 +251,12 @@ const handleMergeRequestEventUnlocked = async (
     doc.updatedAt = updatedAt;
   }
   const actionedAt = parseDate(attrs.actioned_at) ?? updatedAt;
+  const terminalDate = parseDate(
+    doc.state === 'merged'
+      ? apiMergeRequest?.merged_at ?? attrs.merged_at
+      : apiMergeRequest?.closed_at ?? attrs.closed_at,
+  ) ?? ((attrs.action === 'close' || attrs.action === 'merge') ? actionedAt : undefined);
+  doc.finishedAt = getMergeRequestFinishedAt(doc, existingDoc, terminalDate);
   if (attrs.action === 'open' && !existingDoc?.gameStartedAt) {
     doc.gameStartedAt = createdAt ?? updatedAt ?? new Date();
   }

@@ -8,6 +8,7 @@ import { startMergeRequestSync } from './services/mergeRequestSync';
 import { startReviewReminderScheduler } from './services/reviewReminderScheduler';
 import { startGameScheduler } from './services/gameScheduler';
 import { startReviewRewardScheduler } from './services/reviewRewardScheduler';
+import { startMergeRequestCleanup } from './services/mergeRequestCleanup';
 
 const bot = createBot(config.botToken);
 
@@ -26,6 +27,7 @@ let server: Server | undefined;
 
 const start = async (): Promise<void> => {
   await ensureMongoConnection();
+  startMergeRequestCleanup();
   startReviewRewardScheduler();
   startMergeRequestSync(bot);
   startReviewReminderScheduler(bot);

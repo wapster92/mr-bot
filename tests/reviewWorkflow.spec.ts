@@ -220,10 +220,25 @@ describe('webhook and periodic review workflow', () => {
     await periodic.syncMergeRequestFromGitlab(bot, stored.projectId, stored.iid);
     assert.equal(stored.state, 'closed');
     assert.equal(stored.reviewerLabelsCleanupPending, true);
+    assert.ok(stored.finishedAt instanceof Date);
+    const finishedAt = stored.finishedAt;
     now += 121_000;
     await periodic.syncMergeRequestFromGitlab(bot, stored.projectId, stored.iid);
     assert.deepEqual(labels, ['bug']);
     assert.equal(stored.reviewerLabelsCleanupPending, false);
+    assert.deepEqual(stored.finishedAt, finishedAt);
     assert.deepEqual(stored.reviewers, ['reviewer.one', 'reviewer.two']);
+  });
+
+  it('persists a closure date on webhook updates and clears it if the MR reopens', async () => {
+    mrState = 'closed';
+    await event();
+    assert.ok(stored.finishedAt instanceof Date);
+    const finishedAt = stored.finishedAt;
+    await event();
+    assert.deepEqual(stored.finishedAt, finishedAt);
+    mrState = 'opened';
+    await event();
+    assert.equal(stored.finishedAt, null);
   });
 });
