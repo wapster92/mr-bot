@@ -55,13 +55,16 @@ export const buildReviewLabelPlan = (
   if (mr.isDraft || ['closed', 'merged'].includes(mr.state ?? '')) {
     return { labels: [], approvalRequestedAt: {} };
   }
-  const available = users.filter((user) => user.isActive !== false && user.isAllowed !== false);
+  const available = [...new Map(users
+    .filter((user) => user.isActive !== false && user.isAllowed !== false)
+    .map((user) => [user.gitlabUsername.toLowerCase(), user])).values()];
   const leads = available.filter((user) => user.isLead);
   const reviewers = available.filter(isReviewerEnabled);
   const summary = summarizeMergeRequestApprovals(
     mr,
     new Set(leads.map((user) => user.gitlabUsername.toLowerCase())),
     new Set(reviewers.map((user) => user.gitlabUsername.toLowerCase())),
+    new Set(available.map((user) => user.gitlabUsername.toLowerCase())),
   );
   if (hasRequiredMergeApprovals(summary)) {
     return { labels: [MERGE_READY_LABEL], approvalRequestedAt: {} };
@@ -69,10 +72,12 @@ export const buildReviewLabelPlan = (
   const approvers = new Set((mr.approvedBy ?? []).map((name) => name.toLowerCase()));
   const assigned = new Set((mr.reviewers ?? []).map((name) => name.toLowerCase()));
   const pendingLeads = new Set(summary.pendingLeadUsernames);
+  const pendingCommenters = new Set(summary.pendingCommenterUsernames);
   const pending = available.filter((user) => {
     const username = user.gitlabUsername.toLowerCase();
     return !approvers.has(username) &&
-      (user.isLead ? pendingLeads.has(username) : isReviewerEnabled(user) && assigned.has(username));
+      (pendingCommenters.has(username) ||
+        (user.isLead ? pendingLeads.has(username) : isReviewerEnabled(user) && assigned.has(username)));
   });
   const approvalRequestedAt: Record<string, Date> = {};
   const labels = pending.map((user): ReviewLabel => {

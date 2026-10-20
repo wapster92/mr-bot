@@ -13,9 +13,10 @@ import { getRecipientByGitlabUsername, type DeliveryRecipient } from '../../mess
 import { recordAuthorChangesScore, runGameAction } from '../../services/gameScoring';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
 import { getUserByGitlabUsername } from '../../data/userStore';
-import { fetchMergeRequest, fetchMergeRequestApprovals, fetchMergeRequestNotes } from '../api';
+import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import { shouldNotifyReviewUpdate } from '../../services/pushReviewNotifications';
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
+import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -49,12 +50,12 @@ const handlePushEventUnlocked = async (
     typeof commitSha === 'string' && /^0+$/.test(commitSha);
   if (isBranchDeletion || payload.total_commits_count === 0) return;
 
-  const [apiMr, approvals, notes] = await Promise.all([
+  const [apiMr, approvals, commentHistory] = await Promise.all([
     fetchMergeRequest(doc.projectId, doc.iid),
     fetchMergeRequestApprovals(doc.projectId, doc.iid),
-    doc.reviewCommentsSyncedAt ? undefined : fetchMergeRequestNotes(doc.projectId, doc.iid),
+    loadReviewCommentHistory(doc),
   ]);
-  const update: Partial<MergeRequestDocument> = { lastLintStatus: 'pending' };
+  const update: Partial<MergeRequestDocument> = { ...commentHistory, lastLintStatus: 'pending' };
   if (apiMr?.state !== undefined) update.state = apiMr.state;
   if (apiMr) {
     update.isDraft = Boolean(apiMr.draft || apiMr.work_in_progress || /^draft[: ]/i.test(apiMr.title ?? doc.title));
@@ -63,14 +64,6 @@ const handlePushEventUnlocked = async (
     update.approvedBy = approvals.approved_by
       .map((item) => item.user?.username)
       .filter((name): name is string => Boolean(name));
-  }
-  if (notes) {
-    update.reviewCommenters = [...new Set([
-      ...(doc.reviewCommenters ?? []),
-      ...notes.filter((note) => !note.system && note.authorUsername)
-        .map((note) => note.authorUsername!),
-    ].map((name) => name.toLowerCase()))];
-    update.reviewCommentsSyncedAt = new Date();
   }
   const current = { ...doc, ...update };
   update.finishedAt = getMergeRequestFinishedAt(current, doc, parseDate(

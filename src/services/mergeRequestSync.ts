@@ -18,6 +18,7 @@ import { withMergeRequestLock } from './mergeRequestLock';
 import { runGameAction } from './gameScoring';
 import { syncMergeRequestGameReadiness } from './mergeReadiness';
 import { getMergeRequestFinishedAt } from './mergeRequestRetention';
+import { loadReviewCommentHistory } from './reviewCommentHistory';
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
@@ -94,10 +95,11 @@ export const syncMergeRequestFromGitlab = async (
   bot: Telegraf<BotContext>,
   projectId: number,
   iid: number,
+  options: { lockHeld?: boolean } = {},
 ): Promise<void> => {
   // Fetch inside the same lock as webhook handlers: an older periodic snapshot
   // must not restore labels or approvals after a newer webhook has completed.
-  await withMergeRequestLock(projectId, iid, async () => {
+  const sync = async (): Promise<void> => {
     const stored = await findMergeRequest(projectId, iid);
     if (!stored || (['closed', 'merged'].includes(stored.state ?? '') && !stored.reviewerLabelsCleanupPending)) return;
     const [apiMr, approvals] = await Promise.all([
@@ -136,6 +138,7 @@ export const syncMergeRequestFromGitlab = async (
       ...(approvals?.approved_by ?? []).flatMap((item) => item.user ? [item.user] : []),
     ]);
     const now = new Date();
+    Object.assign(mr, await loadReviewCommentHistory(mr));
     mr.finishedAt = getMergeRequestFinishedAt(mr, stored, parseDate(
       mr.state === 'merged' ? apiMr?.merged_at : apiMr?.closed_at,
     ), parseDate(apiMr?.updated_at) ?? now);
@@ -162,7 +165,13 @@ export const syncMergeRequestFromGitlab = async (
     await runGameAction(`periodic readiness ${projectId}/${iid}`, async () => {
       await syncMergeRequestGameReadiness(projectId, iid, now);
     });
-  });
+  };
+  if (options.lockHeld) {
+    // Used by note handling, which already holds this exact MR lock.
+    await sync();
+  } else {
+    await withMergeRequestLock(projectId, iid, sync);
+  }
 };
 
 export const syncOpenMergeRequests = async (): Promise<void> => {

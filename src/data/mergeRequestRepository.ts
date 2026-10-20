@@ -34,10 +34,14 @@ export type MergeRequestDocument = {
   approvedBy?: string[];
   reviewCommenters?: string[];
   reviewCommentsSyncedAt?: Date;
+  reviewCommentRequirementsSyncedAt?: Date;
+  reviewCommentHistorySyncPending?: boolean;
+  reviewCommentHistoryLastAttemptAt?: Date;
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
   finalReviewNotifiedFor?: string[];
   authorMergeNotified?: boolean;
+  authorMergeNotificationVersion?: number;
   gameStartedAt?: Date;
   gameLintFailed?: boolean;
   gameLintFirstPassEvaluated?: boolean;
@@ -251,8 +255,13 @@ export const listPendingReviewsForReviewer = async (
   const collection = await getCollection();
   return collection
     .find({
-      reviewers: gitlabUsername,
-      approvedBy: { $ne: gitlabUsername },
+      $or: [
+        { reviewers: { $regex: `^${escapeRegex(gitlabUsername)}$`, $options: 'i' } },
+        { reviewCommenters: { $regex: `^${escapeRegex(gitlabUsername)}$`, $options: 'i' } },
+      ],
+      approvedBy: { $not: new RegExp(`^${escapeRegex(gitlabUsername)}$`, 'i') },
+      'author.gitlabUsername': { $not: new RegExp(`^${escapeRegex(gitlabUsername)}$`, 'i') },
+      isDraft: { $ne: true },
       $and: [
         { $or: [{ state: { $exists: false } }, { state: { $nin: ['merged', 'closed'] } }] },
       ],

@@ -173,4 +173,14 @@ describe('merge readiness', () => {
       approvedBy: ['reviewer.one', 'lead.two'],
     }), leads, activeUsers), true);
   });
+
+  it('does not start the author merge timer before a commenting volunteer approves', () => {
+    const commenters = new Set([...activeUsers, 'volunteer']);
+    const doc = createMergeRequest({ reviewCommenters: ['volunteer'] });
+    assert.equal(isMergeRequestGameReady(doc, leads, activeUsers, commenters), false);
+    assert.equal(isMergeRequestGameReady({ ...doc, approvedBy: [...doc.approvedBy!, 'volunteer'] },
+      leads, activeUsers, commenters), true);
+    assert.equal(isMergeRequestGameReady({ ...doc, reviewCommentHistorySyncPending: true },
+      leads, activeUsers, commenters), false);
+  });
 });

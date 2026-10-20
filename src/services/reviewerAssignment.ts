@@ -80,7 +80,8 @@ export const reconcileReviewersForMr = async (
 
   const [leads, reviewerUsers] = await Promise.all([
     listLeadUsers(),
-    Promise.all(reviewers.map((username) => getUserByGitlabUsername(username))),
+    Promise.all(uniqueUsernames([...reviewers, ...(mr.reviewCommenters ?? [])])
+      .map((username) => getUserByGitlabUsername(username))),
   ]);
   const plan = buildReviewLabelPlan(
     { ...mr, reviewers },

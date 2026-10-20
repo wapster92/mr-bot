@@ -117,6 +117,14 @@ export const listActiveReviewers = async (): Promise<string[]> => {
   return docs.map((doc) => doc.gitlabUsername).filter(Boolean);
 };
 
+export const listActiveUsernames = async (): Promise<string[]> => {
+  const collection = await getCollection();
+  const docs = await collection.find({
+    isAllowed: true, isActive: { $ne: false }, gitlabUsername: { $type: 'string' },
+  }).project({ gitlabUsername: 1 }).toArray();
+  return docs.map((doc) => doc.gitlabUsername).filter(Boolean);
+};
+
 export const listAssignableReviewers = async (): Promise<string[]> => {
   const [reviewers, exempt] = await Promise.all([listActiveReviewers(), getReviewExemptUsernames()]);
   return reviewers.filter((username) => !exempt.has(username.toLowerCase()));

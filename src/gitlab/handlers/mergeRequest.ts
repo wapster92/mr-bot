@@ -36,6 +36,7 @@ import {
 import { syncMergeRequestGameReadiness } from '../../services/mergeReadiness';
 import { notifyMergeRequestApprovals } from '../../services/approvalNotifications';
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
+import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
 
 const ISSUE_KEY_REGEX = /([A-Z]+-\d+)/;
 
@@ -276,6 +277,7 @@ const handleMergeRequestEventUnlocked = async (
     }
   }
 
+  Object.assign(doc, await loadReviewCommentHistory(doc));
   const reviewerState = await reconcileReviewersForMr(doc, apiMergeRequest?.labels);
   doc.reviewers = reviewerState.reviewers;
   doc.reviewerLabels = reviewerState.reviewerLabels;

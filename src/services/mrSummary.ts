@@ -1,15 +1,16 @@
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
 import { escapeHtml, formatGitlabUserLabel } from '../messages/format';
-import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { listActiveReviewers, listActiveUsernames, listLeadUsers } from '../data/userStore';
 import { summarizeMergeRequestApprovals } from './approvalPolicy';
 
 export const buildMergeRequestMessages = async (
   mergeRequests: MergeRequestDocument[],
 ): Promise<string[]> => {
   const messages: string[] = [];
-  const [leads, activeReviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
+  const [leads, activeReviewers, users] = await Promise.all([listLeadUsers(), listActiveReviewers(), listActiveUsernames()]);
   const leadUsernames = new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase()));
   const reviewerUsernames = new Set(activeReviewers.map((name) => name.toLowerCase()));
+  const commenterUsernames = new Set(users.map((name) => name.toLowerCase()));
 
   for (const mr of mergeRequests) {
     const reviewers = mr.reviewers ?? [];
@@ -32,11 +33,14 @@ export const buildMergeRequestMessages = async (
       mr.author.name,
     );
 
-    const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames);
+    const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames, commenterUsernames);
     const approvalsLine = `Апрувы: ревьюер ${Math.min(summary.developerApprovers.length, 1)}/1, ` +
       `лиды ${summary.leadApprovers.length}/${summary.requiredLeadCount}`;
     const pendingLeadLabels = await Promise.all(
       summary.pendingLeadUsernames.map((username) => formatGitlabUserLabel(username)),
+    );
+    const pendingCommenterLabels = await Promise.all(
+      summary.pendingCommenterUsernames.map((username) => formatGitlabUserLabel(username)),
     );
     const approvedLine = approvedLabels.length
       ? `Апрувнули: ${approvedLabels.join(', ')}`
@@ -53,6 +57,9 @@ export const buildMergeRequestMessages = async (
       approvedLine,
       pendingLine,
       `Лиды без апрува: ${pendingLeadLabels.join(', ') || '—'}`,
+      ...(summary.requiredCommenterUsernames.length
+        ? [`Комментаторы без обязательного апрува: ${pendingCommenterLabels.join(', ') || '—'}`] : []),
+      ...(!summary.commentHistoryReady ? ['История комментариев ещё сверяется: готовность не подтверждена.'] : []),
       `Ревьюеры: ${reviewerNames}`,
       `Линт: ${escapeHtml(mr.lastLintStatus ?? 'не запускался')}`,
       escapeHtml(mr.url),

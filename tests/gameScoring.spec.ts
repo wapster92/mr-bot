@@ -144,6 +144,7 @@ describe('assigned approval and voluntary comment rewards', () => {
 
   it('does not unlock approval XP after a voluntary comment', async () => {
     await comment('outsider'); await approve('outsider');
+    await approve('outsider', { ...mr, reviewCommenters: ['outsider'] });
     assert.deepEqual([...events.values()].map((event) => event.points), [20]);
     assert.equal(reminderReads, 0);
   });

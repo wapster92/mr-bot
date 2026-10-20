@@ -2,10 +2,12 @@ import {
   clearMergeRequestGameReady,
   findMergeRequest,
   startMergeRequestGameReady,
+  updateMergeRequest,
 } from '../data/mergeRequestRepository';
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
-import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { listActiveReviewers, listActiveUsernames, listLeadUsers } from '../data/userStore';
 import { hasRequiredMergeApprovals, summarizeMergeRequestApprovals } from './approvalPolicy';
+import { loadReviewCommentHistory } from './reviewCommentHistory';
 
 const BLOCKING_MERGE_STATUSES = new Set(['cannot_be_merged']);
 const BLOCKING_DETAILED_STATUSES = new Set([
@@ -25,6 +27,7 @@ export const isMergeRequestGameReady = (
   mr: MergeRequestDocument,
   leadUsernames: Set<string>,
   activeUsernames: Set<string>,
+  activeCommenters: Set<string> = activeUsernames,
 ): boolean => {
   if (mr.isDraft || ['merged', 'closed'].includes(mr.state ?? '')) {
     return false;
@@ -44,7 +47,7 @@ export const isMergeRequestGameReady = (
 
   const activeLeads = new Set([...leadUsernames].filter((name) => activeUsernames.has(name)));
   return hasRequiredMergeApprovals(
-    summarizeMergeRequestApprovals(mr, activeLeads, activeUsernames),
+    summarizeMergeRequestApprovals(mr, activeLeads, activeUsernames, activeCommenters),
   );
 };
 
@@ -57,9 +60,15 @@ export const syncMergeRequestGameReadiness = async (
   if (!mr) {
     return { ready: false, started: false };
   }
-  const [leads, activeReviewers] = await Promise.all([
+  const history = await loadReviewCommentHistory(mr);
+  if (Object.keys(history).length) {
+    Object.assign(mr, history);
+    await updateMergeRequest(projectId, iid, history);
+  }
+  const [leads, activeReviewers, users] = await Promise.all([
     listLeadUsers(),
     listActiveReviewers(),
+    listActiveUsernames(),
   ]);
   const leadUsernames = new Set(
     leads
@@ -70,7 +79,8 @@ export const syncMergeRequestGameReadiness = async (
     ...activeReviewers.map((username) => username.toLowerCase()),
     ...leadUsernames,
   ]);
-  const ready = isMergeRequestGameReady(mr, leadUsernames, activeUsernames);
+  const ready = isMergeRequestGameReady(mr, leadUsernames, activeUsernames,
+    new Set(users.map((name) => name.toLowerCase())));
   if (!ready) {
     await clearMergeRequestGameReady(projectId, iid);
     return { ready: false, started: false };

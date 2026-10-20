@@ -1,7 +1,7 @@
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
 import { updateMergeRequest, type MergeRequestDocument } from '../data/mergeRequestRepository';
-import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { listActiveReviewers, listActiveUsernames, listLeadUsers } from '../data/userStore';
 import { ensureLeadReviewReminder } from '../data/reviewReminderRepository';
 import { getRecipientByGitlabUsername } from '../messages/recipients';
 import { deliverHtmlMessage } from '../messages/send';
@@ -18,10 +18,11 @@ export const isApprovalNotificationRelevant = (
   recipientUsername: string,
   leads: Set<string>,
   reviewers: Set<string>,
+  commenters: Set<string> = new Set([...leads, ...reviewers]),
 ): boolean => {
   if (eventType !== 'mr_final_review' && eventType !== 'mr_ready_to_merge') return true;
   if (!mr || mr.isDraft || ['closed', 'merged'].includes(mr.state ?? '')) return false;
-  const summary = summarizeMergeRequestApprovals(mr, leads, reviewers);
+  const summary = summarizeMergeRequestApprovals(mr, leads, reviewers, commenters);
   return eventType === 'mr_final_review'
     ? needsLeadReview(summary) && summary.pendingLeadUsernames.includes(recipientUsername.toLowerCase())
     : hasRequiredMergeApprovals(summary);
@@ -32,11 +33,12 @@ export const notifyMergeRequestApprovals = async (
   mr: MergeRequestDocument,
 ): Promise<void> => {
   if (mr.isDraft || ['closed', 'merged'].includes(mr.state ?? '')) return;
-  const [leads, reviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
+  const [leads, reviewers, users] = await Promise.all([listLeadUsers(), listActiveReviewers(), listActiveUsernames()]);
   const summary = summarizeMergeRequestApprovals(
     mr,
     new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase())),
     new Set(reviewers.map((name) => name.toLowerCase())),
+    new Set(users.map((name) => name.toLowerCase())),
   );
   const notified = new Set((mr.finalReviewNotifiedFor ?? []).map((name) => name.toLowerCase()));
   if (needsLeadReview(summary)) {
@@ -59,8 +61,16 @@ export const notifyMergeRequestApprovals = async (
   }
   const ready = hasRequiredMergeApprovals(summary);
   let authorNotified = mr.authorMergeNotified ?? false;
+  let version = mr.authorMergeNotificationVersion ?? 0;
   if (!ready) {
-    authorNotified = false;
+    // A temporary history API failure alone must not turn an already sent
+    // readiness notification into a new delivery cycle after recovery.
+    const onlyHistoryUnknown = !summary.commentHistoryReady &&
+      hasRequiredMergeApprovals({ ...summary, commentHistoryReady: true });
+    if (!onlyHistoryUnknown) {
+      if (authorNotified) version += 1;
+      authorNotified = false;
+    }
   } else if (!authorNotified && mr.author.gitlabUsername) {
     const recipient = await getRecipientByGitlabUsername(mr.author.gitlabUsername);
     if (recipient) {
@@ -68,7 +78,7 @@ export const notifyMergeRequestApprovals = async (
         eventType: 'mr_ready_to_merge',
         projectId: mr.projectId,
         mrIid: mr.iid,
-        dedupeId: 'both-leads-v2',
+        dedupeId: `comment-approvers-v1:${version}`,
       });
       authorNotified = true;
     }
@@ -77,6 +87,7 @@ export const notifyMergeRequestApprovals = async (
     await updateMergeRequest(mr.projectId, mr.iid, {
       finalReviewNotifiedFor: [...notified],
       authorMergeNotified: authorNotified,
+      authorMergeNotificationVersion: version,
     });
   }
 };

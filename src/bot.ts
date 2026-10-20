@@ -2,7 +2,6 @@ import { Context, Markup, Telegraf } from 'telegraf';
 import {
   deleteManagedUser,
   getManagedUserById,
-  getReviewerByTelegramUsername,
   getUserByTelegramUsername,
   listActiveReviewers,
   listLeadUsers,
@@ -35,13 +34,10 @@ export type BotContext = Context;
 
 const buildMainKeyboard = (
   isLead: boolean,
-  isReviewer = true,
 ): ReturnType<typeof Markup.keyboard> => {
   const rows: string[][] = isLead
     ? [['Мои MR', 'Все MR'], ['Финал', 'Пользователи']]
-    : isReviewer
-    ? [['На ревью', 'Мои MR'], ['Все MR']]
-    : [['Мои MR', 'Все MR']];
+    : [['На ревью', 'Мои MR'], ['Все MR']];
   rows.push(['Мой профиль', 'Топ']);
   rows.push(['Помощь']);
   return Markup.keyboard(rows).resize();
@@ -54,7 +50,7 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
     '/help — показать эту подсказку',
     '/status — базовая проверка доступности бота',
   ];
-  if (user && !user.isLead && user.isReviewer !== false) {
+  if (user && !user.isLead) {
     commandLines.push('/review — показать MR, где нужен твой ревью');
   }
   commandLines.push(
@@ -75,7 +71,7 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
   }
   return ctx.reply(
     commandLines.join('\n'),
-    buildMainKeyboard(Boolean(user?.isLead), user?.isReviewer !== false),
+    buildMainKeyboard(Boolean(user?.isLead)),
   );
 };
 
@@ -181,7 +177,6 @@ export const createBot = (token: string): Telegraf<BotContext> => {
           'Привет! Я запомнил этот чат 📝. Введи /help, чтобы увидеть команды.',
           buildMainKeyboard(
             Boolean(allowedUser.isLead),
-            allowedUser.isReviewer !== false,
           ),
         );
       } catch (error) {
@@ -198,8 +193,8 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.command('status', (ctx) => ctx.reply('Все системы в норме ✅'));
 
   const handleReview = async (ctx: BotContext): Promise<void> => {
-    const user = await getReviewerByTelegramUsername(ctx.from?.username);
-    if (!user) {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user || user.isActive === false || user.isLead) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
       return;
     }

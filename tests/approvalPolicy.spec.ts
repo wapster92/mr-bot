@@ -82,4 +82,66 @@ describe('approval policy', () => {
     mr.approvedBy = ['developer.two', 'tech.lead', 'team.lead'];
     assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals(mr, leads, active)), false);
   });
+
+  const commentedMr = {
+    author: { gitlabUsername: 'author' }, reviewers: ['developer.one', 'developer.two'],
+    approvedBy: ['developer.two', 'tech.lead', 'team.lead'], reviewCommenters: ['developer.one'],
+  };
+  const developers = new Set(['developer.one', 'developer.two']);
+  const participants = new Set([...developers, ...leads, 'volunteer', 'author.only', 'author']);
+
+  it('requires the commenting assignee even when the other reviewer and both leads approved', () => {
+    const summary = summarizeMergeRequestApprovals(commentedMr, leads, developers, participants);
+    assert.deepEqual(summary.pendingCommenterUsernames, ['developer.one']);
+    assert.equal(hasRequiredMergeApprovals(summary), false);
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...commentedMr, approvedBy: [...commentedMr.approvedBy, 'DEVELOPER.ONE'],
+    }, leads, developers, participants)), true);
+  });
+
+  it('requires every active voluntary commenter, including author-only users', () => {
+    const mr = { ...commentedMr, reviewCommenters: ['VOLUNTEER', 'author.only', 'volunteer'] };
+    const summary = summarizeMergeRequestApprovals(mr, leads, developers, participants);
+    assert.deepEqual(summary.requiredCommenterUsernames, ['volunteer', 'author.only']);
+    assert.equal(hasRequiredMergeApprovals(summary), false);
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...mr, approvedBy: [...mr.approvedBy, 'volunteer', 'AUTHOR.ONLY'],
+    }, leads, developers, participants)), true);
+  });
+
+  it('does not substitute a volunteer approval for the required assigned developer', () => {
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...commentedMr, reviewCommenters: ['volunteer'], approvedBy: ['volunteer', ...leads],
+    }, leads, developers, participants)), false);
+  });
+
+  it('exempts the author, unavailable users and unknown accounts from commenter obligations', () => {
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...commentedMr, reviewCommenters: ['author', 'on.vacation', 'blocked', 'removed', 'unknown'],
+    }, leads, developers, participants)), true);
+  });
+
+  it('keeps the author-lead exemption even if the author commented', () => {
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...commentedMr, author: { gitlabUsername: 'tech.lead' }, reviewCommenters: ['TECH.LEAD'],
+      approvedBy: ['developer.two', 'team.lead'],
+    }, leads, developers, participants)), true);
+  });
+
+  it('still invites leads after one developer approve while other commenters are pending', () => {
+    const summary = summarizeMergeRequestApprovals({ ...commentedMr, approvedBy: ['developer.two'] }, leads, developers, participants);
+    assert.equal(needsLeadReview(summary), true);
+    assert.equal(hasRequiredMergeApprovals(summary), false);
+  });
+
+  it('restores the obligation after an approve is reset', () => {
+    const mr = { ...commentedMr, reviewCommenters: ['volunteer'] };
+    assert.deepEqual(summarizeMergeRequestApprovals(mr, leads, developers, participants).pendingCommenterUsernames, ['volunteer']);
+  });
+
+  it('does not confirm readiness until an unavailable comment history has been checked', () => {
+    assert.equal(hasRequiredMergeApprovals(summarizeMergeRequestApprovals({
+      ...commentedMr, reviewCommenters: [], reviewCommentHistorySyncPending: true,
+    }, leads, developers, participants)), false);
+  });
 });

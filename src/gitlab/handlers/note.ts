@@ -1,4 +1,4 @@
-import { findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
+import { clearMergeRequestGameReady, findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
@@ -13,6 +13,7 @@ import { markReviewCompletedForReviewer } from '../../services/reviewReminderSer
 import { recordReviewCommentScore, runGameAction } from '../../services/gameScoring';
 import { getUserByGitlabUsername } from '../../data/userStore';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
+import { syncMergeRequestFromGitlab } from '../../services/mergeRequestSync';
 
 const parseDate = (value?: string): Date => {
   if (!value) {
@@ -63,20 +64,22 @@ const handleNoteEventUnlocked = async (payload: any, bot: Telegraf<BotContext>):
       ),
   );
   const commenterUser = commenter ? await getUserByGitlabUsername(commenter) : undefined;
-  const isReviewParticipant = isAssignedReviewer || commenterUser?.isLead === true;
   const noteAttributes = payload.object_attributes ?? {};
   const noteId = noteAttributes.id;
   const discussionKey = noteAttributes.discussion_id ?? noteId;
   const isNewHumanComment =
     !noteAttributes.system &&
     (!noteAttributes.action || noteAttributes.action === 'create');
-  if (commenter && isReviewParticipant && isNewHumanComment &&
-    commenterUser?.isActive !== false && commenterUser?.isAllowed !== false) {
+  const activeCommenter = commenterUser && commenterUser.isActive !== false && commenterUser.isAllowed !== false;
+  if (commenter && activeCommenter && isNewHumanComment) {
     const username = commenter.toLowerCase();
     if (!doc.reviewCommenters?.some((name) => name.toLowerCase() === username)) {
       await updateMergeRequest(doc.projectId, doc.iid, {
         reviewCommenters: [...(doc.reviewCommenters ?? []), username],
       });
+    }
+    if (!doc.approvedBy?.some((name) => name.toLowerCase() === username)) {
+      await clearMergeRequestGameReady(doc.projectId, doc.iid);
     }
   }
   if (
@@ -96,11 +99,17 @@ const handleNoteEventUnlocked = async (payload: any, bot: Telegraf<BotContext>):
       }),
     );
   }
-  if (commenter && isAssignedReviewer) {
+  if (commenter && isAssignedReviewer && activeCommenter && isNewHumanComment) {
     await markReviewCompletedForReviewer(
       { projectId: doc.projectId, iid: doc.iid },
       commenter,
     );
+  }
+
+  if (commenter && activeCommenter && isNewHumanComment) {
+    await syncMergeRequestFromGitlab(bot, doc.projectId, doc.iid, { lockHeld: true }).catch((error) => {
+      console.warn(`[note] Failed to refresh approval requirements ${doc.projectId}/${doc.iid}`, error);
+    });
   }
 
   const authorRecipient = await getRecipientByGitlabUsername(authorGitlab);

@@ -126,6 +126,34 @@ describe('review labels and approval deadlines', () => {
     assert.ok(plan.labels.some((label) => label.name === 'Второй ревьюер'));
     assert.ok(!plan.labels.some((label) => label.name === MERGE_READY_LABEL.name));
   });
+
+  it('keeps a mandatory commenter label after the other assigned reviewer and leads approve', () => {
+    const plan = buildReviewLabelPlan({ ...mr,
+      reviewCommenters: ['reviewer.two'], approvedBy: ['reviewer.one', 'tech.lead', 'team.lead'],
+    }, users, friday);
+    assert.deepEqual(plan.labels.map((label) => label.name), ['Второй ревьюер']);
+  });
+
+  it('shows a volunteer with short name and urgency, without adding them to the assigned pair', () => {
+    const volunteer = { gitlabUsername: 'volunteer', name: 'Ирина В. Сорокина', isReviewer: false };
+    const doc = { ...mr, reviewCommenters: ['volunteer'],
+      approvedBy: ['reviewer.one', 'reviewer.two', 'tech.lead', 'team.lead'],
+      approvalRequestedAt: { volunteer: friday },
+    };
+    const plan = buildReviewLabelPlan(doc, [...users, volunteer, volunteer], monday);
+    assert.deepEqual(plan.labels, [{ name: '⚠️ Ирина В. Сорокина', color: '#ed9121' }]);
+    assert.deepEqual(doc.reviewers, ['reviewer.one', 'reviewer.two']);
+    assert.deepEqual(buildReviewLabelPlan({ ...doc, approvedBy: [...doc.approvedBy, 'volunteer'] },
+      [...users, volunteer], monday).labels, [MERGE_READY_LABEL]);
+  });
+
+  it('does not hold readiness for unavailable volunteers or the author', () => {
+    const doc = { ...mr, reviewCommenters: ['volunteer', 'author'],
+      approvedBy: ['reviewer.one', 'tech.lead', 'team.lead'] };
+    assert.deepEqual(buildReviewLabelPlan(doc, [...users,
+      { gitlabUsername: 'volunteer', isActive: false }, { gitlabUsername: 'author' },
+    ], monday).labels, [MERGE_READY_LABEL]);
+  });
 });
 
 describe('queued final-review notifications', () => {
@@ -146,5 +174,13 @@ describe('queued final-review notifications', () => {
     assert.equal(isApprovalNotificationRelevant('mr_final_review', {
       ...mr, author: { gitlabUsername: 'tech.lead' }, approvedBy: ['reviewer.one'],
     }, 'tech.lead', leads, reviewers), false);
+  });
+
+  it('cancels merge-ready for a pending volunteer but keeps the lead invitation relevant', () => {
+    const doc = { ...pending, reviewCommenters: ['volunteer'] };
+    assert.equal(isApprovalNotificationRelevant('mr_ready_to_merge', doc, 'author', leads, reviewers,
+      new Set([...reviewers, ...leads, 'volunteer'])), false);
+    assert.equal(isApprovalNotificationRelevant('mr_final_review', doc, 'team.lead', leads, reviewers,
+      new Set([...reviewers, ...leads, 'volunteer'])), true);
   });
 });

@@ -12,7 +12,7 @@ import {
   releaseReviewReminderClaim,
   type ReviewReminderDocument,
 } from '../data/reviewReminderRepository';
-import { getUserByGitlabUsername, listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { getUserByGitlabUsername, listActiveReviewers, listActiveUsernames, listLeadUsers } from '../data/userStore';
 import { hasReviewFeedbackScore } from '../data/scoreEventRepository';
 import { isReviewerEnabled } from '../data/userTypes';
 import { fetchMergeRequestNotes } from '../gitlab/api';
@@ -52,9 +52,10 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
     }
 
     const now = new Date();
-    const [leads, activeReviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
+    const [leads, activeReviewers, users] = await Promise.all([listLeadUsers(), listActiveReviewers(), listActiveUsernames()]);
     const leadUsernames = new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase()));
     const reviewerUsernames = new Set(activeReviewers.map((name) => name.toLowerCase()));
+    const commenterUsernames = new Set(users.map((name) => name.toLowerCase()));
     const processCandidate = async (candidate: ReviewReminderDocument): Promise<void> => {
       let claimedAt: Date | undefined;
       try {
@@ -75,18 +76,21 @@ export const runReviewReminderScheduler = async (bot: Telegraf<BotContext>): Pro
         }
 
         const reviewerUsername = reminder.reviewerUsername.toLowerCase();
-        const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames);
+        const summary = summarizeMergeRequestApprovals(mr, leadUsernames, reviewerUsernames, commenterUsernames);
         const isLeadReview = reminder.isLeadReview === true;
         const stillRequired = isLeadReview
           ? summary.developerApprovers.length > 0 && summary.pendingLeadUsernames.includes(reviewerUsername)
           : mr.reviewers?.some((username) => username.toLowerCase() === reviewerUsername);
-        if (hasRequiredMergeApprovals(summary) || !stillRequired) {
+        const baseApprovalsComplete = hasRequiredMergeApprovals({
+          ...summary, pendingCommenterUsernames: [], commentHistoryReady: true,
+        });
+        if (!stillRequired || (baseApprovalsComplete && !summary.pendingCommenterUsernames.includes(reviewerUsername))) {
           await markReminderInactive(reminder.projectId, reminder.iid, reminder.reviewerUsername);
           return;
         }
         if (mr.approvedBy?.some((username) => username.toLowerCase() === reviewerUsername) ||
+          mr.reviewCommenters?.some((username) => username.toLowerCase() === reviewerUsername) ||
           (isLeadReview && (
-            mr.reviewCommenters?.some((username) => username.toLowerCase() === reviewerUsername) ||
             await hasReviewFeedbackScore(mr.projectId, mr.iid, reviewerUsername)
           ))) {
           await markReviewCompleted(reminder.projectId, reminder.iid, reminder.reviewerUsername);

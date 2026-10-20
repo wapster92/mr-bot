@@ -91,6 +91,8 @@ before(() => {
   mockModule('../src/data/userStore.ts', {
     getUserByGitlabUsername: async (username: string) => users.find((user) => user.gitlabUsername === username),
     listLeadUsers: async () => users.filter((user) => user.isLead && user.isActive !== false && user.isAllowed !== false),
+    listActiveUsernames: async () => users.filter((user) => user.isActive !== false && user.isAllowed !== false)
+      .map((user) => user.gitlabUsername),
     listActiveReviewers: async () => users.filter((user) => !user.isLead && user.isReviewer !== false &&
       user.isActive !== false && user.isAllowed !== false).map((user) => user.gitlabUsername),
   });
@@ -168,6 +170,22 @@ describe('one-day and two-day review penalties', () => {
     await reminderService.markReviewCompletedForReviewer(mr, 'reviewer.two');
     t.mock.timers.setTime(day2.getTime()); await scheduler.runReviewReminderScheduler(bot);
     assert.equal(penalties().length, 1);
+  });
+
+  it('does not penalize a mandatory commenter whose feedback was recovered from history', async (t) => {
+    await assign(); mr.reviewCommenters = ['reviewer.two'];
+    mr.approvedBy = ['reviewer.one', 'tech.lead', 'team.lead'];
+    t.mock.timers.setTime(day4.getTime()); await scheduler.runReviewReminderScheduler(bot);
+    assert.equal(penalties().length, 0);
+    assert.ok(documents[0]?.reviewCompletedAt);
+  });
+
+  it('does not penalize an optional silent reviewer while a volunteer approval is still pending', async (t) => {
+    await assign(); users.push({ gitlabUsername: 'volunteer', isActive: true, isAllowed: true });
+    mr.reviewCommenters = ['volunteer']; mr.approvedBy = ['reviewer.one', 'tech.lead', 'team.lead'];
+    t.mock.timers.setTime(day4.getTime()); await scheduler.runReviewReminderScheduler(bot);
+    assert.equal(penalties().length, 0);
+    assert.ok(documents[0]?.inactiveAt);
   });
 
   it('does not count weekend hours', async (t) => {

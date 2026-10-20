@@ -1,5 +1,5 @@
 import type { MergeRequestDocument } from '../data/mergeRequestRepository';
-import { isReviewerEnabled, type UserRecord } from '../data/userTypes';
+import type { UserRecord } from '../data/userTypes';
 
 export const shouldNotifyReviewUpdate = (
   mr: MergeRequestDocument | null,
@@ -11,7 +11,5 @@ export const shouldNotifyReviewUpdate = (
   if (mr.author.gitlabUsername?.toLowerCase() === username) return false;
   if (!mr.reviewCommenters?.some((name) => name.toLowerCase() === username)) return false;
   if (mr.approvedBy?.some((name) => name.toLowerCase() === username)) return false;
-  return user.isLead === true || (isReviewerEnabled(user) && Boolean(
-    mr.reviewers?.some((name) => name.toLowerCase() === username),
-  ));
+  return true;
 };
