@@ -27,6 +27,7 @@ export type ScoreEventMetadata = {
   noteId?: string;
   workingMinutes?: number;
   position?: number;
+  overdueDay?: 1 | 2;
 };
 
 export type ScoreEventDocument = {
@@ -182,6 +183,18 @@ export const hasScoredReviewComment = async (
       { projection: { _id: 1 } },
     ),
   );
+};
+
+export const hasReviewFeedbackScore = async (
+  projectId: number,
+  iid: number,
+  username: string,
+): Promise<boolean> => {
+  const collection = await getCollection();
+  return Boolean(await collection.findOne({
+    projectId, iid, usernameLower: username.toLowerCase(),
+    eventType: { $in: ['review_comment', 'review_approved'] },
+  }, { projection: { _id: 1 } }));
 };
 
 const buildScoreFilter = (input: {

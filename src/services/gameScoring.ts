@@ -27,7 +27,7 @@ import {
 } from './gameRules';
 
 const scoreLocks = new Map<string, Promise<void>>();
-type ScoringReviewReminder = ReviewReminderDocument & { isLeadReview?: boolean };
+type ScoringReviewReminder = ReviewReminderDocument;
 
 export const runGameAction = async (
   label: string,
@@ -281,16 +281,28 @@ export const recordReviewUnapprovalScore = async (input: {
 export const recordReviewOverdueScore = async (
   reminder: ReviewReminderDocument,
   overdueAt: Date,
+  day: 1 | 2 = 2,
 ): Promise<void> => {
+  const reviewer = await getUserByGitlabUsername(reminder.reviewerUsername);
   if (
     !reminder.gameStartedAt ||
-    !(await isScoringReviewerAvailable(reminder.reviewerUsername))
+    reminder.reviewCompletedAt || reminder.inactiveAt || reminder.escalatedAt ||
+    !reviewer || !isScoringReviewParticipant(reviewer) ||
+    (reminder.isLeadReview ? reviewer.isLead !== true : !isReviewerEnabled(reviewer))
   ) {
     return;
   }
   const assignmentKey = buildReviewAssignmentKey(reminder);
+  // Preserve the existing two-day key so old penalties cannot be charged twice.
+  const eventKey = day === 2
+    ? `review:overdue:${assignmentKey}`
+    : `review:overdue:day-1:${assignmentKey}`;
+  if (await hasScoreEvent(eventKey)) return;
+  // Do not add the new first-day penalty retrospectively to an assignment
+  // that already received its terminal two-day penalty on an older version.
+  if (day === 1 && await hasScoreEvent(`review:overdue:${assignmentKey}`)) return;
   await addScoreEvent({
-    eventKey: `review:overdue:${assignmentKey}`,
+    eventKey,
     username: reminder.reviewerUsername,
     category: 'review',
     eventType: 'review_overdue',
@@ -298,10 +310,11 @@ export const recordReviewOverdueScore = async (
     projectId: reminder.projectId,
     iid: reminder.iid,
     occurredAt: overdueAt,
-    description: 'Нет обратной связи два рабочих дня',
+    description: day === 1 ? 'Нет обратной связи один рабочий день' : 'Нет обратной связи два рабочих дня',
     metadata: {
       assignmentKey,
       assignedAt: getTrackingStart(reminder).toISOString(),
+      overdueDay: day,
     },
   });
 };

@@ -14,6 +14,7 @@ export type ReviewReminderDocument = {
   inactiveAt?: Date;
   processingAt?: Date;
   gameStartedAt?: Date;
+  isLeadReview?: boolean;
 };
 
 const COLLECTION_NAME = 'review_reminders';
@@ -63,6 +64,27 @@ export const findReviewReminderForReviewer = async (
     iid,
     reviewerUsernameLower: reviewerUsername.toLowerCase(),
   });
+};
+
+export const ensureLeadReviewReminder = async (
+  projectId: number,
+  iid: number,
+  username: string,
+  now = new Date(),
+): Promise<void> => {
+  const collection = await getCollection();
+  const filter = { projectId, iid, reviewerUsernameLower: username.toLowerCase() };
+  const existing = await collection.findOne(filter);
+  if (existing?.isLeadReview && !existing.inactiveAt) return;
+  if (existing) {
+    await resetReviewReminder({ projectId, iid, reviewerUsername: username, assignedAt: now });
+    await collection.updateOne(filter, { $set: { isLeadReview: true } });
+    return;
+  }
+  await collection.updateOne(filter, { $setOnInsert: {
+    ...filter, reviewerUsername: username, assignedAt: now, gameStartedAt: now,
+    reminderCount: 0, isLeadReview: true,
+  } }, { upsert: true });
 };
 
 export const ensureReviewReminderGameStarted = async (

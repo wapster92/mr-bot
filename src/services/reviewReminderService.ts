@@ -24,8 +24,9 @@ export const syncReviewRemindersForMr = async (
   const normalizedSet = new Set(normalizedReviewers);
 
   const existing = await listReviewRemindersForMr(mr.projectId, mr.iid);
+  const developerReminders = existing.filter((item) => !item.isLeadReview);
   const existingMap = new Map(
-    existing.map((item) => [item.reviewerUsernameLower, item]),
+    developerReminders.map((item) => [item.reviewerUsernameLower, item]),
   );
 
   for (const reviewer of reviewers) {
@@ -58,7 +59,7 @@ export const syncReviewRemindersForMr = async (
     });
   }
 
-  for (const reminder of existing) {
+  for (const reminder of developerReminders) {
     if (!normalizedSet.has(reminder.reviewerUsernameLower)) {
       await markReminderInactive(mr.projectId, mr.iid, reminder.reviewerUsername);
     }

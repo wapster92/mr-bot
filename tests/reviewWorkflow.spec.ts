@@ -81,6 +81,7 @@ before(() => {
     markReviewCompletedForApprovers: async () => {},
     markAllRemindersInactiveForMr: async () => {},
   });
+  mockModule('../src/data/reviewReminderRepository.ts', { ensureLeadReviewReminder: async () => {} });
   mockModule('../src/services/gameScoring.ts', {
     runGameAction: async (_label: string, action: () => Promise<void>) => action(),
     recordReviewApprovalScore: async () => {},

@@ -2,6 +2,7 @@ import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../bot';
 import { updateMergeRequest, type MergeRequestDocument } from '../data/mergeRequestRepository';
 import { listActiveReviewers, listLeadUsers } from '../data/userStore';
+import { ensureLeadReviewReminder } from '../data/reviewReminderRepository';
 import { getRecipientByGitlabUsername } from '../messages/recipients';
 import { deliverHtmlMessage } from '../messages/send';
 import { buildFinalReviewMessage, buildMergeReadyForAuthorMessage } from '../messages/templates';
@@ -40,16 +41,20 @@ export const notifyMergeRequestApprovals = async (
   const notified = new Set((mr.finalReviewNotifiedFor ?? []).map((name) => name.toLowerCase()));
   if (needsLeadReview(summary)) {
     for (const username of summary.pendingLeadUsernames) {
-      if (notified.has(username)) continue;
-      const recipient = await getRecipientByGitlabUsername(username);
-      if (!recipient) continue;
-      await deliverHtmlMessage(bot, recipient, buildFinalReviewMessage(mr), {
-        eventType: 'mr_final_review',
-        projectId: mr.projectId,
-        mrIid: mr.iid,
-        dedupeId: 'both-leads-v2',
-      });
-      notified.add(username);
+      if (!notified.has(username)) {
+        const recipient = await getRecipientByGitlabUsername(username);
+        if (!recipient) continue;
+        await deliverHtmlMessage(bot, recipient, buildFinalReviewMessage(mr), {
+          eventType: 'mr_final_review',
+          projectId: mr.projectId,
+          mrIid: mr.iid,
+          dedupeId: 'both-leads-v2',
+        });
+        notified.add(username);
+      }
+      // Start at the final-review invitation, never at MR creation. Existing
+      // reminders are preserved so periodic sync does not reset the timer.
+      await ensureLeadReviewReminder(mr.projectId, mr.iid, username);
     }
   }
   const ready = hasRequiredMergeApprovals(summary);
