@@ -1,4 +1,4 @@
-import { findMergeRequest } from '../../data/mergeRequestRepository';
+import { findMergeRequest, updateMergeRequest } from '../../data/mergeRequestRepository';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
@@ -12,6 +12,7 @@ import {
 import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
 import { recordReviewCommentScore, runGameAction } from '../../services/gameScoring';
 import { getUserByGitlabUsername } from '../../data/userStore';
+import { withMergeRequestLock } from '../../services/mergeRequestLock';
 
 const parseDate = (value?: string): Date => {
   if (!value) {
@@ -29,7 +30,7 @@ export const buildCommentRecipients = (
   ...leadRecipients,
 ];
 
-export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+const handleNoteEventUnlocked = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
   await persistGitlabUserProfileFromPayload(payload);
   if (payload.object_attributes?.noteable_type !== 'MergeRequest') {
     return;
@@ -69,6 +70,15 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
   const isNewHumanComment =
     !noteAttributes.system &&
     (!noteAttributes.action || noteAttributes.action === 'create');
+  if (commenter && isReviewParticipant && isNewHumanComment &&
+    commenterUser?.isActive !== false && commenterUser?.isAllowed !== false) {
+    const username = commenter.toLowerCase();
+    if (!doc.reviewCommenters?.some((name) => name.toLowerCase() === username)) {
+      await updateMergeRequest(doc.projectId, doc.iid, {
+        reviewCommenters: [...(doc.reviewCommenters ?? []), username],
+      });
+    }
+  }
   if (
     commenter &&
     isReviewParticipant &&
@@ -118,4 +128,13 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     mrIid: doc.iid,
     ...(noteId ? { dedupeId: String(noteId) } : {}),
   });
+};
+
+export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): Promise<void> => {
+  const mr = payload.merge_request;
+  const projectId = mr?.target_project_id ?? mr?.source_project_id;
+  const iid = mr?.iid;
+  if (payload.object_attributes?.noteable_type !== 'MergeRequest' ||
+    typeof projectId !== 'number' || typeof iid !== 'number') return;
+  await withMergeRequestLock(projectId, iid, () => handleNoteEventUnlocked(payload, bot));
 };

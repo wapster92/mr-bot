@@ -2,15 +2,19 @@ import {
   clearMergeRequestGameReady,
   findMergeRequestByBranch,
   updateMergeRequest,
+  type MergeRequestDocument,
 } from '../../data/mergeRequestRepository';
 import type { Telegraf } from 'telegraf';
 import type { BotContext } from '../../bot';
 import { persistGitlabUserProfileFromPayload } from './common';
 import { buildPushUpdateMessage } from '../../messages/templates';
-import { deliverHtmlMessage } from '../../messages/send';
-import { getReviewerRecipientByGitlabUsername } from '../../messages/recipients';
+import { deliverHtmlMessageToRecipients } from '../../messages/send';
+import { getRecipientByGitlabUsername, type DeliveryRecipient } from '../../messages/recipients';
 import { recordAuthorChangesScore, runGameAction } from '../../services/gameScoring';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
+import { getUserByGitlabUsername } from '../../data/userStore';
+import { fetchMergeRequest, fetchMergeRequestApprovals, fetchMergeRequestNotes } from '../api';
+import { shouldNotifyReviewUpdate } from '../../services/pushReviewNotifications';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -39,15 +43,41 @@ const handlePushEventUnlocked = async (
   }
 
   const commitSha = payload.after ?? payload.checkout_sha;
+  if (typeof commitSha !== 'string' || !commitSha) return;
   const isBranchDeletion =
     typeof commitSha === 'string' && /^0+$/.test(commitSha);
+  if (isBranchDeletion || payload.total_commits_count === 0) return;
+
+  const [apiMr, approvals, notes] = await Promise.all([
+    fetchMergeRequest(doc.projectId, doc.iid),
+    fetchMergeRequestApprovals(doc.projectId, doc.iid),
+    doc.reviewCommentsSyncedAt ? undefined : fetchMergeRequestNotes(doc.projectId, doc.iid),
+  ]);
+  const update: Partial<MergeRequestDocument> = { lastLintStatus: 'pending' };
+  if (apiMr?.state !== undefined) update.state = apiMr.state;
+  if (apiMr) {
+    update.isDraft = Boolean(apiMr.draft || apiMr.work_in_progress || /^draft[: ]/i.test(apiMr.title ?? doc.title));
+  }
+  if (approvals && Array.isArray(approvals.approved_by)) {
+    update.approvedBy = approvals.approved_by
+      .map((item) => item.user?.username)
+      .filter((name): name is string => Boolean(name));
+  }
+  if (notes) {
+    update.reviewCommenters = [...new Set([
+      ...(doc.reviewCommenters ?? []),
+      ...notes.filter((note) => !note.system && note.authorUsername)
+        .map((note) => note.authorUsername!),
+    ].map((name) => name.toLowerCase()))];
+    update.reviewCommentsSyncedAt = new Date();
+  }
+  const current = { ...doc, ...update };
   const pushedAt = parseDate(payload.event_created_at) ?? new Date();
-  await updateMergeRequest(doc.projectId, doc.iid, { lastLintStatus: 'pending' });
+  await updateMergeRequest(doc.projectId, doc.iid, update);
   await clearMergeRequestGameReady(doc.projectId, doc.iid);
 
   const actorUsername = payload.user_username ?? payload.user?.username;
   if (
-    !isBranchDeletion &&
     actorUsername &&
     doc.author.gitlabUsername?.toLowerCase() === actorUsername.toLowerCase()
   ) {
@@ -56,33 +86,25 @@ const handlePushEventUnlocked = async (
     );
   }
 
-  if (!doc.reviewers?.length) {
+  if (current.isDraft || ['closed', 'merged'].includes(current.state ?? '')) {
     return;
   }
 
-  const dedupeId =
-    typeof commitSha === 'string' && commitSha
-      ? `${branch}:${commitSha}`
-      : undefined;
+  const dedupeId = `${branch}:${commitSha}`;
 
-  for (const reviewer of doc.reviewers) {
-    const reviewerRecipient = await getReviewerRecipientByGitlabUsername(reviewer);
-    if (!reviewerRecipient) {
-      continue;
-    }
-
-    const message = buildPushUpdateMessage({
-      title: doc.title ?? '—',
-      url: doc.url ?? '—',
-      taskUrl: doc.taskUrl,
-    });
-    await deliverHtmlMessage(bot, reviewerRecipient, message, {
-      eventType: 'mr_push',
-      projectId: doc.projectId,
-      mrIid: doc.iid,
-      ...(dedupeId ? { dedupeId } : {}),
-    });
+  const recipients: DeliveryRecipient[] = [];
+  for (const username of new Set(current.reviewCommenters ?? [])) {
+    const user = await getUserByGitlabUsername(username);
+    if (!user || !shouldNotifyReviewUpdate(current, user)) continue;
+    const recipient = await getRecipientByGitlabUsername(username);
+    if (recipient) recipients.push(recipient);
   }
+  await deliverHtmlMessageToRecipients(bot, recipients, buildPushUpdateMessage(current), {
+    eventType: 'mr_push',
+    projectId: doc.projectId,
+    mrIid: doc.iid,
+    dedupeId,
+  });
 };
 
 export const handlePushEvent = async (

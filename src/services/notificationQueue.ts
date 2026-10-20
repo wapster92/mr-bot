@@ -7,6 +7,7 @@ import {
   markNotificationCancelled,
   markNotificationDelivered,
   markNotificationError,
+  type NotificationQueueDocument,
 } from '../data/notificationQueueRepository';
 import {
   getUserByGitlabUsername,
@@ -14,100 +15,96 @@ import {
   listActiveReviewers,
   listLeadUsers,
 } from '../data/userStore';
+import type { UserRecord } from '../data/userTypes';
 import { isWithinWorkingHours } from '../messages/recipients';
 import { sendHtmlMessage } from '../messages/send';
 import { isApprovalNotificationRelevant } from './approvalNotifications';
+import { withMergeRequestLock } from './mergeRequestLock';
+import { shouldNotifyReviewUpdate } from './pushReviewNotifications';
 
 let flushInProgress = false;
 
-const approvalNotificationObsolete = async (
-  item: {
-    eventType?: string;
-    mrKey?: string;
-  },
+const parseMrKey = (key?: string): { projectId: number; iid: number } | undefined => {
+  const parts = key?.split(':');
+  if (parts?.length !== 2) return undefined;
+  const projectId = Number(parts[0]);
+  const iid = Number(parts[1]);
+  return Number.isInteger(projectId) && projectId > 0 && Number.isInteger(iid) && iid > 0
+    ? { projectId, iid }
+    : undefined;
+};
+
+const notificationObsolete = async (
+  item: NotificationQueueDocument,
+  user: UserRecord,
   leadUsernames: Set<string>,
   reviewerUsernames: Set<string>,
-  recipientUsername: string,
 ): Promise<boolean> => {
-  if (
-    !['mr_final_review', 'mr_ready_to_merge'].includes(item.eventType ?? '') ||
-    !item.mrKey
-  ) {
-    return false;
-  }
-  const [projectIdText, iidText] = item.mrKey.split(':');
-  const projectId = Number(projectIdText);
-  const iid = Number(iidText);
-  if (!Number.isInteger(projectId) || !Number.isInteger(iid)) {
-    return false;
-  }
-  const mr = await findMergeRequest(projectId, iid);
+  if (!['mr_final_review', 'mr_ready_to_merge', 'mr_push'].includes(item.eventType ?? '')) return false;
+  const key = parseMrKey(item.mrKey);
+  if (!key) return true;
+  const mr = await findMergeRequest(key.projectId, key.iid);
+  if (item.eventType === 'mr_push') return !shouldNotifyReviewUpdate(mr, user);
   return !isApprovalNotificationRelevant(
-    item.eventType, mr, recipientUsername, leadUsernames, reviewerUsernames,
+    item.eventType, mr, user.gitlabUsername, leadUsernames, reviewerUsernames,
   );
 };
 
-export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise<void> => {
-  if (flushInProgress) {
+const deliverQueuedNotification = async (
+  bot: Telegraf<BotContext>,
+  item: NotificationQueueDocument,
+  now: Date,
+  leadUsernames: Set<string>,
+  reviewerUsernames: Set<string>,
+): Promise<void> => {
+  const user =
+    (item.telegramUsername ? await getUserByTelegramUsername(item.telegramUsername) : undefined) ??
+    (item.gitlabUsername ? await getUserByGitlabUsername(item.gitlabUsername) : undefined);
+
+  if (!user || user.isAllowed === false || user.isActive === false) {
+    if (item._id) await markNotificationCancelled(
+      item._id, 'Пользователь удалён, отключён или ему запрещён доступ', now,
+    );
     return;
   }
-  flushInProgress = true;
+  if (await notificationObsolete(item, user, leadUsernames, reviewerUsernames)) {
+    if (item._id) await markNotificationCancelled(
+      item._id, 'Уведомление об обновлении, проверке или готовности MR больше не актуально', now,
+    );
+    return;
+  }
+  if (!isWithinWorkingHours(user, now)) return;
+  if (!item._id || !(await claimNotification(item._id, now))) return;
 
   try {
-    const queued = await listQueuedNotifications(200);
-    if (!queued.length) {
-      return;
-    }
+    await sendHtmlMessage(bot, item.chatId, item.text);
+    await markNotificationDelivered(item._id);
+  } catch (error) {
+    await markNotificationError(item._id, String(error));
+    console.warn('[notify] Failed to deliver queued message', error);
+  }
+};
 
+export const flushNotificationQueue = async (bot: Telegraf<BotContext>): Promise<void> => {
+  if (flushInProgress) return;
+  flushInProgress = true;
+  try {
+    const queued = await listQueuedNotifications(200);
+    if (!queued.length) return;
     const now = new Date();
     const [leads, reviewers] = await Promise.all([listLeadUsers(), listActiveReviewers()]);
-    const leadUsernames = new Set(
-      leads.map((lead) => lead.gitlabUsername.toLowerCase()),
-    );
+    const leadUsernames = new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase()));
     const reviewerUsernames = new Set(reviewers.map((name) => name.toLowerCase()));
     for (const item of queued) {
-      const userRecord =
-        (item.telegramUsername
-          ? await getUserByTelegramUsername(item.telegramUsername)
-          : undefined) ??
-        (item.gitlabUsername ? await getUserByGitlabUsername(item.gitlabUsername) : undefined);
-
-      if (!userRecord || userRecord.isAllowed === false || userRecord.isActive === false) {
-        if (item._id) {
-          await markNotificationCancelled(
-            item._id,
-            'Пользователь удалён, отключён или ему запрещён доступ',
-            now,
-          );
-        }
-        continue;
-      }
-
-      if (await approvalNotificationObsolete(item, leadUsernames, reviewerUsernames, userRecord.gitlabUsername)) {
-        if (item._id) {
-          await markNotificationCancelled(
-            item._id,
-            'Уведомление о проверке или готовности MR больше не актуально',
-            now,
-          );
-        }
-        continue;
-      }
-
-      if (!isWithinWorkingHours(userRecord, now)) {
-        continue;
-      }
-
-      if (!item._id || !(await claimNotification(item._id, now))) {
-        continue;
-      }
-
-      try {
-        await sendHtmlMessage(bot, item.chatId, item.text);
-        await markNotificationDelivered(item._id);
-      } catch (error) {
-        await markNotificationError(item._id, String(error));
-        console.warn('[notify] Failed to deliver queued message', error);
+      const deliver = (): Promise<void> =>
+        deliverQueuedNotification(bot, item, now, leadUsernames, reviewerUsernames);
+      const key = item.eventType === 'mr_push' ? parseMrKey(item.mrKey) : undefined;
+      if (key) {
+        // Approval webhooks and push delivery use the same MR lock. Recheck
+        // queued pushes inside the lock immediately before sending.
+        await withMergeRequestLock(key.projectId, key.iid, deliver);
+      } else {
+        await deliver();
       }
     }
   } finally {

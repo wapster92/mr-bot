@@ -32,6 +32,27 @@ export type GitlabApprovals = {
   }>;
 };
 
+export type GitlabMergeRequestNote = {
+  authorUsername?: string;
+  system: boolean;
+};
+
+export const fetchMergeRequestNotes = async (
+  projectId: number,
+  iid: number,
+): Promise<GitlabMergeRequestNote[] | undefined> => {
+  const api = getApiConfig();
+  if (!api) return undefined;
+  const discussions = await withRetry(api, `MergeRequestDiscussions.all ${projectId}#${iid}`, () =>
+    getClient(api).MergeRequestDiscussions.all(projectId, iid, { perPage: 100 }),
+  );
+  // Discussions includes ordinary comments, threads and inline diff notes.
+  return discussions?.flatMap((discussion) => discussion.notes ?? []).map((note) => ({
+    ...(note.author?.username ? { authorUsername: note.author.username } : {}),
+    system: note.system,
+  }));
+};
+
 export type GitlabPipelineJob = {
   id?: number;
   name?: string;

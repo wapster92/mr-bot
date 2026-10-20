@@ -31,6 +31,8 @@ export type MergeRequestDocument = {
   reviewerLabels?: string[];
   approvalRequestedAt?: Record<string, Date>;
   approvedBy?: string[];
+  reviewCommenters?: string[];
+  reviewCommentsSyncedAt?: Date;
   lastLintStatus?: string;
   finalReviewNotified?: boolean;
   finalReviewNotifiedFor?: string[];
