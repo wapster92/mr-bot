@@ -7,6 +7,7 @@ import {
 import {
   addScoreEvent,
   countReviewCommentScores,
+  findScoreEvent,
   hasScoredReviewComment,
   hasScoreEvent,
 } from '../data/scoreEventRepository';
@@ -19,6 +20,7 @@ import {
 } from './workingHours';
 import {
   GAME_POINTS,
+  LEAD_GAME_POINTS,
   getMergeSpeedReward,
   getReviewCommentPoints,
   getReviewResponseReward,
@@ -98,7 +100,7 @@ const getReviewReminder = async (
   if (user?.isLead) {
     // A stable key limits paid lead discussions without creating regular
     // reviewer reminders or making the lead eligible for reviewer assignment.
-    const assignedAt = mr.gameStartedAt ?? mr.createdAt ?? mr.leadReviewStartedAt ?? occurredAt;
+    const assignedAt = mr.gameStartedAt ?? mr.createdAt ?? occurredAt;
     return {
       projectId: mr.projectId,
       iid: mr.iid,
@@ -120,15 +122,13 @@ const getReviewReminder = async (
 const recordReviewerResponse = async (
   reminder: ScoringReviewReminder,
   occurredAt: Date,
-  mr: MergeRequestDocument,
 ): Promise<void> => {
   const user = await getUserByGitlabUsername(reminder.reviewerUsername);
-  if (!user || !isScoringReviewParticipant(user)) {
+  if (!user || !isScoringReviewParticipant(user) || user.isLead) {
     return;
   }
   const assignmentKey = buildReviewAssignmentKey(reminder);
-  if (user.isLead && (!mr.leadReviewStartedAt || occurredAt < mr.leadReviewStartedAt)) return;
-  const trackingStart = user.isLead ? mr.leadReviewStartedAt! : getTrackingStart(reminder);
+  const trackingStart = getTrackingStart(reminder);
   const workingMinutes = getWorkingMinutesBetween(user, trackingStart, occurredAt);
   const workdayMinutes = getWorkdayMinutes(user);
   const reward = getReviewResponseReward(workingMinutes, workdayMinutes);
@@ -173,6 +173,7 @@ export const recordReviewCommentScore = async (input: {
       return;
     }
     const assignmentKey = buildReviewAssignmentKey(reminder);
+    const user = await getUserByGitlabUsername(input.reviewerUsername);
     const eventKey =
       `review:comment:${assignmentKey}:` + input.discussionKey;
     for (let attempt = 0; attempt < 3; attempt += 1) {
@@ -180,7 +181,7 @@ export const recordReviewCommentScore = async (input: {
         break;
       }
       const scoredComments = await countReviewCommentScores(assignmentKey);
-      const points = getReviewCommentPoints(scoredComments);
+      const points = getReviewCommentPoints(scoredComments, user?.isLead === true);
       if (points === undefined) {
         break;
       }
@@ -208,7 +209,7 @@ export const recordReviewCommentScore = async (input: {
         break;
       }
     }
-    await recordReviewerResponse(reminder, input.occurredAt, input.mr);
+    await recordReviewerResponse(reminder, input.occurredAt);
   });
 };
 
@@ -217,6 +218,7 @@ export const recordReviewApprovalScore = async (input: {
   username: string;
   occurredAt: Date;
 }): Promise<void> => {
+  const approver = await getUserByGitlabUsername(input.username);
   if (
     input.mr.isDraft || ['closed', 'merged'].includes(input.mr.state ?? '') ||
     input.mr.author.gitlabUsername?.toLowerCase() === input.username.toLowerCase() ||
@@ -229,14 +231,13 @@ export const recordReviewApprovalScore = async (input: {
     username: input.username,
     category: 'review',
     eventType: 'review_approved',
-    points: GAME_POINTS.reviewApprove,
+    points: approver?.isLead ? LEAD_GAME_POINTS.reviewApprove : GAME_POINTS.reviewApprove,
     projectId: input.mr.projectId,
     iid: input.mr.iid,
     occurredAt: input.occurredAt,
     description: 'Approve MR',
   });
 
-  const approver = await getUserByGitlabUsername(input.username);
   if (approver?.isLead ||
     input.mr.reviewers?.some(
       (reviewer) => reviewer.toLowerCase() === input.username.toLowerCase(),
@@ -248,7 +249,7 @@ export const recordReviewApprovalScore = async (input: {
       input.occurredAt,
     );
     if (reminder) {
-      await recordReviewerResponse(reminder, input.occurredAt, input.mr);
+      await recordReviewerResponse(reminder, input.occurredAt);
     }
   }
 };
@@ -260,7 +261,8 @@ export const recordReviewUnapprovalScore = async (input: {
 }): Promise<void> => {
   const approvalKey =
     `review:approve:${input.mr.projectId}:${input.mr.iid}:${input.username.toLowerCase()}`;
-  if (!(await hasScoreEvent(approvalKey))) {
+  const approval = await findScoreEvent(approvalKey);
+  if (!approval) {
     return;
   }
   await addScoreEvent({
@@ -268,7 +270,7 @@ export const recordReviewUnapprovalScore = async (input: {
     username: input.username,
     category: 'review',
     eventType: 'review_unapproved',
-    points: -GAME_POINTS.reviewApprove,
+    points: -approval.points,
     projectId: input.mr.projectId,
     iid: input.mr.iid,
     occurredAt: input.occurredAt,

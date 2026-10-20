@@ -52,6 +52,7 @@ before(() => {
         return true;
       },
       hasScoreEvent: async (eventKey: string) => events.has(eventKey),
+      findScoreEvent: async (eventKey: string) => events.get(eventKey) ?? null,
       countReviewCommentScores: async (assignmentKey: string) =>
         [...events.values()].filter(
           (event) =>
@@ -172,11 +173,10 @@ describe('game scoring idempotency', () => {
     assert.equal(unapproveEvents[0]?.points, -30);
   });
 
-  it('pays lead comments and approval with one response bonus after the review stage starts', async () => {
+  it('pays leads a reduced comment and approval reward without a response bonus', async () => {
     const leadMr = {
       ...mr, iid: 11,
       createdAt: new Date('2026-07-27T06:00:00.000Z'),
-      leadReviewStartedAt: new Date('2026-07-27T06:00:00.000Z'),
     };
     const initialCount = events.size;
     await scoring.recordReviewCommentScore({
@@ -185,7 +185,7 @@ describe('game scoring idempotency', () => {
     });
     await scoring.recordReviewApprovalScore({ mr: leadMr, username: 'tech.lead', occurredAt });
     const leadEvents = [...events.values()].slice(initialCount);
-    assert.deepEqual(leadEvents.map((event) => event.points), [20, 15, 30]);
+    assert.deepEqual(leadEvents.map((event) => event.points), [5, 10]);
     const afterFirstDelivery = events.size;
     await scoring.recordReviewCommentScore({
       mr: leadMr, reviewerUsername: 'tech.lead', noteId: 'lead-note',
@@ -206,7 +206,7 @@ describe('game scoring idempotency', () => {
       });
     }
     const leadEvents = [...events.values()].slice(initialCount);
-    assert.deepEqual(leadEvents.map((event) => event.points), [20, 10, 5]);
+    assert.deepEqual(leadEvents.map((event) => event.points), [5, 3, 2]);
   });
 
   it('does not score lead self-review or review on Draft/closed MRs', async () => {
@@ -219,5 +219,14 @@ describe('game scoring idempotency', () => {
       await scoring.recordReviewApprovalScore({ mr: leadMr, username: 'tech.lead', occurredAt });
     }
     assert.equal(events.size, initialCount);
+  });
+
+  it('reverses exactly the original approval reward even if the balance or role changed', async () => {
+    const historicalKey = 'review:approve:1:14:tech.lead';
+    events.set(historicalKey, { eventKey: historicalKey, eventType: 'review_approved', points: 30 });
+    await scoring.recordReviewUnapprovalScore({ mr: { ...mr, iid: 14 }, username: 'tech.lead', occurredAt });
+    assert.equal(events.get('review:unapprove:1:14:tech.lead')?.points, -30);
+    await scoring.recordReviewUnapprovalScore({ mr: { ...mr, iid: 11 }, username: 'tech.lead', occurredAt });
+    assert.equal(events.get('review:unapprove:1:11:tech.lead')?.points, -10);
   });
 });

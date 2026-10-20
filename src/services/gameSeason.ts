@@ -44,3 +44,13 @@ export const parseSeasonInput = (input: string, now = new Date()): string | unde
   const season = `${match[2]}-${match[1]}`;
   return season <= getSeasonKey(now) ? season : undefined;
 };
+
+export const getGameDayKey = (date = new Date()): string => {
+  const parts = new Intl.DateTimeFormat('en-CA', {
+    timeZone: GAME_TIMEZONE, year: 'numeric', month: '2-digit', day: '2-digit',
+  }).formatToParts(date);
+  return `${getDatePart(parts, 'year')}-${getDatePart(parts, 'month')}-${getDatePart(parts, 'day')}`;
+};
+
+export const getGameDayStart = (date = new Date()): Date =>
+  new Date(`${getGameDayKey(date)}T00:00:00+03:00`);

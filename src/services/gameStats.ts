@@ -9,7 +9,8 @@ import { escapeHtml, formatGitlabUserLabel } from '../messages/format';
 import { formatSeasonLabel, getSeasonKey } from './gameSeason';
 import { getUserByGitlabUsername } from '../data/userStore';
 import { isReviewerEnabled } from '../data/userTypes';
-import { getReviewExemptUsernames, REVIEW_REWARD_MIN_XP } from './reviewRewards';
+import { getReviewRewardStatus, REVIEW_REWARD_MIN_XP } from './reviewRewards';
+import { listReviewRewardParticipants } from '../data/reviewRewardRepository';
 
 type GameLevel = {
   minXp: number;
@@ -81,12 +82,12 @@ export const buildGameProfileMessage = async (
   username: string,
 ): Promise<string> => {
   const season = getSeasonKey();
-  const [seasonTotals, allTime, recentEvents, achievements, exempt, user] = await Promise.all([
+  const [seasonTotals, allTime, recentEvents, achievements, rewardStatus, user] = await Promise.all([
     listScoreTotals({ season, limit: 500 }),
     getUserScoreTotal({ username }),
     listRecentScoreEvents(username, 5),
     getAchievements(username),
-    getReviewExemptUsernames(),
+    getReviewRewardStatus(),
     getUserByGitlabUsername(username),
   ]);
   const usernameLower = username.toLowerCase();
@@ -119,8 +120,10 @@ export const buildGameProfileMessage = async (
   }
   if (user?.isLead) {
     lines.push('', 'Лиды участвуют в топе, но не освобождаются от ревью.');
-  } else if (user && isReviewerEnabled(user) && exempt.has(usernameLower)) {
-    lines.push('', `🎁 Ты освобождён от новых назначений, пока входишь в первые два места общего топа с ${REVIEW_REWARD_MIN_XP} XP. Уже назначенные MR остаются за тобой.`);
+  } else if (user && isReviewerEnabled(user) && rewardStatus.paused) {
+    lines.push('', `Программа освобождения приостановлена: доступны ${rewardStatus.activeReviewers} разработчика. После освобождения одного должны оставаться минимум трое.`);
+  } else if (user && isReviewerEnabled(user) && rewardStatus.exemptUsernames.has(usernameLower)) {
+    lines.push('', '🎁 Ты освобождён от новых назначений до конца сегодняшнего дня по Москве. Уже назначенные MR остаются за тобой. Пересчёт — в 00:00.');
   }
   if (achievements.length) {
     lines.push('', '<b>Достижения</b>', ...achievements);
@@ -160,23 +163,42 @@ export const buildGameTopMessage = async (
     return lines.join('\n');
   }
   const medals = ['🥇', '🥈', '🥉'];
+  const currentSeason = season === getSeasonKey();
+  const showReviewRewards = currentSeason && category !== 'author';
+  const rewardStatus = showReviewRewards ? await getReviewRewardStatus() : undefined;
+  const exempt = rewardStatus?.exemptUsernames ?? new Set<string>();
   for (let index = 0; index < totals.length; index += 1) {
     const total = totals[index];
     if (!total) continue;
     const userLabel = await formatGitlabUserLabel(total.username);
     let reward = '';
-    if (!category && season === getSeasonKey() && index < 2 && total.points >= REVIEW_REWARD_MIN_XP) {
+    if (showReviewRewards) {
       const user = await getUserByGitlabUsername(total.username);
       reward = user?.isLead
-        ? ' · лид, без освобождения'
-        : user && isReviewerEnabled(user) ? ' · 🎁 без новых ревью' : '';
+        ? ' · лид, вне программы'
+        : user && isReviewerEnabled(user) && exempt.has(total.usernameLower)
+          ? ' · 🎁 освобождён сегодня' : '';
     }
     lines.push(
       `${medals[index] ?? `${index + 1}.`} ${userLabel} — ${total.points} XP${reward}`,
     );
   }
-  if (!category && season === getSeasonKey()) {
-    lines.push('', `🎁 Места №1–2 с результатом от ${REVIEW_REWARD_MIN_XP} XP освобождают от новых ревью. Лиды не освобождаются, их места не передаются дальше.`);
+  if (showReviewRewards) {
+    const winners = await Promise.all([...exempt].map((name) => formatGitlabUserLabel(name)));
+    if (category === 'review') {
+      const participants = await listReviewRewardParticipants();
+      const standings = await listScoreTotals({ season, category: 'review', usernames: participants, limit: 10 });
+      lines.push('', '<b>Зачёт разработчиков для освобождения</b>');
+      for (let index = 0; index < standings.length; index += 1) {
+        const total = standings[index]!;
+        lines.push(`${index + 1}. ${await formatGitlabUserLabel(total.username)} — ${total.points} review XP`);
+      }
+      if (!standings.length) lines.push('Пока нет начислений.');
+    }
+    lines.push('', rewardStatus?.paused
+      ? `Программа приостановлена: доступны ${rewardStatus.activeReviewers} разработчика, для освобождения одного нужно минимум четверо.`
+      : `🎁 Освобождён сегодня: ${winners.join(', ') || 'пока никто'}.`,
+      `Отдельный зачёт за ревью без лидов, порог ${REVIEW_REWARD_MIN_XP} XP. Одно место закреплено до 00:00 по Москве; свободное можно занять в течение дня.`);
   }
   return lines.join('\n');
 };

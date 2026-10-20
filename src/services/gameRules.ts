@@ -12,6 +12,11 @@ export const GAME_POINTS = {
   mergeOverdue: -25,
 } as const;
 
+export const LEAD_GAME_POINTS = {
+  reviewComments: [5, 3, 2],
+  reviewApprove: 10,
+} as const;
+
 export type GameReward = {
   eventType: ScoreEventType;
   points: number;
@@ -20,7 +25,10 @@ export type GameReward = {
 
 export const getReviewCommentPoints = (
   alreadyScoredComments: number,
-): number | undefined => GAME_POINTS.reviewComments[alreadyScoredComments];
+  isLead = false,
+): number | undefined => isLead
+  ? LEAD_GAME_POINTS.reviewComments[alreadyScoredComments]
+  : GAME_POINTS.reviewComments[alreadyScoredComments];
 
 export const getReviewResponseReward = (
   workingMinutes: number,

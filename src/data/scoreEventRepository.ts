@@ -40,6 +40,7 @@ export type ScoreEventDocument = {
   projectId: number;
   iid: number;
   occurredAt: Date;
+  recordedAt?: Date;
   season: string;
   description: string;
   commentSlotKey?: string;
@@ -60,9 +61,6 @@ export type ScoreTotal = {
 
 const COLLECTION_NAME = 'score_events';
 let collectionInitialization: Promise<Collection<ScoreEventDocument>> | undefined;
-let scoreVersion = 0;
-
-export const getScoreVersion = (): number => scoreVersion;
 
 const initializeCollection = async (): Promise<Collection<ScoreEventDocument>> => {
   const db = await getDb();
@@ -73,6 +71,7 @@ const initializeCollection = async (): Promise<Collection<ScoreEventDocument>> =
   await collection.createIndex({ projectId: 1, iid: 1, eventType: 1 });
   await collection.createIndex({ 'metadata.assignmentKey': 1, eventType: 1 });
   await collection.createIndex({ commentSlotKey: 1 }, { unique: true, sparse: true });
+  await collection.createIndex({ season: 1, category: 1, recordedAt: 1 });
   return collection;
 };
 
@@ -95,8 +94,8 @@ export const addScoreEvent = async (
       ...input,
       usernameLower: input.username.toLowerCase(),
       season: getSeasonKey(input.occurredAt),
+      recordedAt: new Date(),
     });
-    scoreVersion += 1;
     console.info(
       `[game] ${input.username} ${input.points >= 0 ? '+' : ''}${input.points} ${input.eventType} ${input.projectId}/${input.iid}`,
     );
@@ -115,6 +114,45 @@ export const addScoreEvent = async (
 export const hasScoreEvent = async (eventKey: string): Promise<boolean> => {
   const collection = await getCollection();
   return Boolean(await collection.findOne({ eventKey }, { projection: { _id: 1 } }));
+};
+
+export const findScoreEvent = async (eventKey: string): Promise<ScoreEventDocument | null> => {
+  const collection = await getCollection();
+  return collection.findOne({ eventKey });
+};
+
+export type ReviewScoreBalance = { usernameLower: string; points: number };
+export type ReviewScoreActivity = ReviewScoreBalance & { at: Date; eventKey: string };
+
+export const loadReviewScoreBaseline = async (
+  season: string,
+  dayStart: Date,
+): Promise<ReviewScoreBalance[]> => {
+  const collection = await getCollection();
+  return collection.aggregate<ReviewScoreBalance>([
+    { $match: { season, category: 'review', $expr: {
+      $lt: [{ $ifNull: ['$recordedAt', '$occurredAt'] }, dayStart],
+    } } },
+    { $group: { _id: '$usernameLower', points: { $sum: '$points' } } },
+    { $project: { _id: 0, usernameLower: '$_id', points: 1 } },
+  ]).toArray();
+};
+
+export const listReviewScoreActivity = async (
+  season: string,
+  dayStart: Date,
+  now: Date,
+): Promise<ReviewScoreActivity[]> => {
+  const collection = await getCollection();
+  return collection.aggregate<ReviewScoreActivity>([
+    { $match: { season, category: 'review' } },
+    { $project: {
+      _id: 0, usernameLower: 1, points: 1, eventKey: 1,
+      at: { $ifNull: ['$recordedAt', '$occurredAt'] },
+    } },
+    { $match: { at: { $gte: dayStart, $lte: now } } },
+    { $sort: { at: 1, usernameLower: 1, eventKey: 1 } },
+  ]).toArray();
 };
 
 export const countReviewCommentScores = async (
@@ -148,16 +186,19 @@ export const hasScoredReviewComment = async (
 
 const buildScoreFilter = (input: {
   username?: string;
+  usernames?: string[];
   season?: string;
   category?: ScoreCategory;
 }): Filter<ScoreEventDocument> => ({
-  ...(input.username ? { usernameLower: input.username.toLowerCase() } : {}),
+  ...(input.username ? { usernameLower: input.username.toLowerCase() }
+    : input.usernames ? { usernameLower: { $in: input.usernames.map((name) => name.toLowerCase()) } } : {}),
   ...(input.season ? { season: input.season } : {}),
   ...(input.category ? { category: input.category } : {}),
 });
 
 export const listScoreTotals = async (input: {
   username?: string;
+  usernames?: string[];
   season?: string;
   category?: ScoreCategory;
   limit?: number;
