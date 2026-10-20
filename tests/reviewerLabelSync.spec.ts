@@ -46,6 +46,17 @@ describe('GitLab label synchronization loop protection', () => {
     assert.deepEqual(writes, [['bug', 'sprint', 'Можно сливать']]);
   });
 
+  it('replaces long role/account labels with short names once and preserves unrelated labels', async () => {
+    const old = ['Ревью: Ирина В. Сорокина (@sorokina.iv)', 'Лид: Дмитрий Р. Сазонов (@sazonov.dr)'];
+    const next = ['Ирина В. Сорокина', 'Дмитрий Р. Сазонов'];
+    assert.equal((await sync.syncReviewerLabelsToGitlab(109, 1, ['bug', ...old], old, next)).ok, true);
+    assert.deepEqual(writes, [['bug', ...next]]);
+    for (let i = 0; i < 10; i += 1) {
+      assert.equal((await sync.syncReviewerLabelsToGitlab(109, 1, ['bug', ...next], next, next)).ok, true);
+    }
+    assert.equal(writes.length, 1);
+  });
+
   it('does not issue writes for repeated unchanged label webhooks', async () => {
     for (let i = 0; i < 20; i += 1) {
       assert.equal((await sync.syncReviewerLabelsToGitlab(

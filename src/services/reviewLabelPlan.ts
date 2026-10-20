@@ -39,11 +39,10 @@ export const buildPersonalReviewLabel = (
   urgency: ReviewUrgency,
 ): ReviewLabel => {
   const prefix = urgency === 'warning' ? '⚠️ ' : urgency === 'danger' ? '🚨 ' : '';
-  const role = user.isLead ? 'Лид' : 'Ревью';
   // Labels are sent as a comma-separated list to GitLab.
   const name = displayName.replace(/,/g, ' ').trim() || user.gitlabUsername;
   return {
-    name: `${prefix}${role}: ${name} (@${user.gitlabUsername.toLowerCase()})`,
+    name: `${prefix}${name}`,
     color: URGENCY_COLORS[urgency],
   };
 };

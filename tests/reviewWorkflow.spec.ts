@@ -145,7 +145,7 @@ describe('webhook and periodic review workflow', () => {
     approvals = ['reviewer.one'];
     await event('approval');
     assert.equal(labels.length, 4);
-    assert.ok(!labels.some((name) => name.includes('@reviewer.one')));
+    assert.ok(!labels.some((name) => name.includes('Первый ревьюер')));
     assert.deepEqual(notifications.map((item) => item.username), ['tech.lead', 'team.lead']);
     for (let i = 0; i < 10; i += 1) await event();
     assert.equal(notifications.length, 2);
@@ -155,8 +155,8 @@ describe('webhook and periodic review workflow', () => {
     approvals.push('tech.lead');
     await event('approval', 'tech.lead');
     assert.equal(labels.length, 3);
-    assert.ok(labels.some((name) => name.includes('@team.lead')));
-    assert.ok(!labels.some((name) => name.includes('@tech.lead')));
+    assert.ok(labels.includes('Тимлид'));
+    assert.ok(!labels.includes('Техлид'));
     assert.equal(notifications.length, 2);
 
     now += 121_000;
@@ -199,7 +199,7 @@ describe('webhook and periodic review workflow', () => {
     now += 121_000;
     await event('unapproval', 'TEAM.LEAD');
     assert.ok(!stored.approvedBy?.includes('team.lead'));
-    assert.ok(labels.some((name) => name.includes('@team.lead')));
+    assert.ok(labels.includes('Тимлид'));
     assert.ok(!labels.includes('Можно сливать'));
   });
 

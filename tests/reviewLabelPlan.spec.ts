@@ -4,6 +4,7 @@ import type { MergeRequestDocument } from '../src/data/mergeRequestRepository';
 import type { UserRecord } from '../src/data/userTypes';
 import {
   buildReviewLabelPlan,
+  buildPersonalReviewLabel,
   getReviewUrgency,
   MERGE_READY_LABEL,
 } from '../src/services/reviewLabelPlan';
@@ -26,6 +27,26 @@ const mr: MergeRequestDocument = {
 };
 
 describe('review labels and approval deadlines', () => {
+  it('uses only the stored display name for developers and leads', () => {
+    for (const isLead of [false, true]) {
+      const user = { gitlabUsername: 'sorokina.iv', isLead };
+      assert.deepEqual(buildPersonalReviewLabel(user, 'Ирина В. Сорокина', 'normal'), {
+        name: 'Ирина В. Сорокина', color: '#428bca',
+      });
+      assert.deepEqual(buildPersonalReviewLabel(user, 'Ирина В. Сорокина', 'warning'), {
+        name: '⚠️ Ирина В. Сорокина', color: '#ed9121',
+      });
+      assert.deepEqual(buildPersonalReviewLabel(user, 'Ирина В. Сорокина', 'danger'), {
+        name: '🚨 Ирина В. Сорокина', color: '#d9534f',
+      });
+    }
+  });
+
+  it('falls back to GitLab username without role or account suffix when the name is missing', () => {
+    assert.equal(buildPersonalReviewLabel({ gitlabUsername: 'reviewer' }, '  ', 'normal').name, 'reviewer');
+    assert.equal(buildPersonalReviewLabel({ gitlabUsername: 'reviewer' }, 'Ирина, Сорокина', 'normal').name, 'Ирина  Сорокина');
+  });
+
   it('shows both reviewers and both leads but starts only reviewer timers initially', () => {
     const plan = buildReviewLabelPlan(mr, users, friday);
     assert.equal(plan.labels.length, 4);
@@ -39,20 +60,20 @@ describe('review labels and approval deadlines', () => {
       ...mr, approvalRequestedAt: initial.approvalRequestedAt, approvedBy: ['REVIEWER.ONE'],
     }, users, monday);
     assert.equal(plan.labels.length, 3);
-    assert.ok(plan.labels.every((label) => !label.name.includes('@reviewer.one')));
+    assert.ok(plan.labels.every((label) => !label.name.includes('Первый ревьюер')));
     assert.equal(plan.approvalRequestedAt['tech.lead'], monday);
     assert.equal(plan.approvalRequestedAt['team.lead'], monday);
     assert.equal(plan.approvalRequestedAt['reviewer.two'], friday);
-    assert.ok(plan.labels.find((label) => label.name.includes('@reviewer.two'))?.name.startsWith('⚠️'));
-    assert.equal(plan.labels.find((label) => label.name.includes('@tech.lead'))?.color, '#428bca');
+    assert.ok(plan.labels.find((label) => label.name.includes('Второй ревьюер'))?.name.startsWith('⚠️'));
+    assert.equal(plan.labels.find((label) => label.name === 'Техлид')?.color, '#428bca');
   });
 
   it('keeps the other lead label after one lead approves and replaces all labels only when complete', () => {
     const partiallyApproved = { ...mr, approvedBy: ['reviewer.one', 'tech.lead'] };
     const plan = buildReviewLabelPlan(partiallyApproved, users, monday);
     assert.equal(plan.labels.length, 2);
-    assert.ok(plan.labels.some((label) => label.name.includes('@team.lead')));
-    assert.ok(plan.labels.every((label) => !label.name.includes('@tech.lead')));
+    assert.ok(plan.labels.some((label) => label.name === 'Тимлид'));
+    assert.ok(plan.labels.every((label) => label.name !== 'Техлид'));
     const ready = buildReviewLabelPlan({
       ...partiallyApproved, approvedBy: [...partiallyApproved.approvedBy, 'team.lead'],
     }, users, monday);
@@ -64,7 +85,7 @@ describe('review labels and approval deadlines', () => {
     const plan = buildReviewLabelPlan({
       ...mr, approvedBy: ['reviewer.one', 'tech.lead'], approvalRequestedAt: {},
     }, users, tuesday);
-    assert.ok(plan.labels.some((label) => label.name.includes('@team.lead')));
+    assert.ok(plan.labels.some((label) => label.name === 'Тимлид'));
     assert.ok(!plan.labels.some((label) => label.name === MERGE_READY_LABEL.name));
     assert.equal(plan.approvalRequestedAt['team.lead'], tuesday);
   });
@@ -102,7 +123,7 @@ describe('review labels and approval deadlines', () => {
       user.gitlabUsername === 'reviewer.one' ? { ...user, isActive: false } : user,
     ), friday);
     assert.equal(plan.labels.length, 3);
-    assert.ok(plan.labels.some((label) => label.name.includes('@reviewer.two')));
+    assert.ok(plan.labels.some((label) => label.name === 'Второй ревьюер'));
     assert.ok(!plan.labels.some((label) => label.name === MERGE_READY_LABEL.name));
   });
 });
