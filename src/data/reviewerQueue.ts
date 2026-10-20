@@ -1,6 +1,6 @@
 import type { Collection } from 'mongodb';
 import { getDb } from '../db/mongo';
-import { listActiveReviewers } from './userStore';
+import { listAssignableReviewers } from './userStore';
 
 const COLLECTION_NAME = 'reviewer_queue';
 let queueOperation = Promise.resolve();
@@ -16,7 +16,7 @@ const getCollection = async (): Promise<Collection<ReviewerQueueDocument>> => {
 };
 
 const baseReviewerList = async (): Promise<string[]> => {
-  return listActiveReviewers();
+  return listAssignableReviewers();
 };
 
 const withQueueOperation = async <T>(task: () => Promise<T>): Promise<T> => {

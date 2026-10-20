@@ -3,6 +3,7 @@ import type { Collection, WithId } from 'mongodb';
 import { getDb } from '../db/mongo';
 import { createDefaultWorkHours } from './userTypes';
 import type { UserRecord } from './userTypes';
+import { getReviewExemptUsernames } from '../services/reviewRewards';
 
 export type UserDocument = UserRecord & {
   gitlabUsernameLower: string;
@@ -114,6 +115,11 @@ export const listActiveReviewers = async (): Promise<string[]> => {
     .project({ gitlabUsername: 1 })
     .toArray();
   return docs.map((doc) => doc.gitlabUsername).filter(Boolean);
+};
+
+export const listAssignableReviewers = async (): Promise<string[]> => {
+  const [reviewers, exempt] = await Promise.all([listActiveReviewers(), getReviewExemptUsernames()]);
+  return reviewers.filter((username) => !exempt.has(username.toLowerCase()));
 };
 
 export const listUsersForManagement = async (): Promise<WithId<UserDocument>[]> => {

@@ -11,7 +11,7 @@ import {
   hasScoreEvent,
 } from '../data/scoreEventRepository';
 import { getUserByGitlabUsername } from '../data/userStore';
-import { isReviewerEnabled } from '../data/userTypes';
+import { isReviewerEnabled, type UserRecord } from '../data/userTypes';
 import {
   addWorkingMinutes,
   getWorkdayMinutes,
@@ -25,6 +25,7 @@ import {
 } from './gameRules';
 
 const scoreLocks = new Map<string, Promise<void>>();
+type ScoringReviewReminder = ReviewReminderDocument & { isLeadReview?: boolean };
 
 export const runGameAction = async (
   label: string,
@@ -63,8 +64,12 @@ const isScoringUserAvailable = async (username: string): Promise<boolean> => {
 
 const isScoringReviewerAvailable = async (username: string): Promise<boolean> => {
   const user = await getUserByGitlabUsername(username);
-  return Boolean(user && isReviewerEnabled(user));
+  return Boolean(user && isScoringReviewParticipant(user));
 };
+
+const isScoringReviewParticipant = (user: UserRecord): boolean =>
+  user.isAllowed !== false && user.isActive !== false &&
+  (user.isLead === true || isReviewerEnabled(user));
 
 const getTrackingStart = (reminder: ReviewReminderDocument): Date => {
   const gameStartedAt = reminder.gameStartedAt ?? reminder.assignedAt;
@@ -72,39 +77,58 @@ const getTrackingStart = (reminder: ReviewReminderDocument): Date => {
 };
 
 export const buildReviewAssignmentKey = (
-  reminder: ReviewReminderDocument,
+  reminder: ScoringReviewReminder,
 ): string =>
-  [
-    reminder.projectId,
-    reminder.iid,
-    reminder.reviewerUsernameLower,
-    reminder.assignedAt.toISOString(),
-    getTrackingStart(reminder).toISOString(),
-  ].join(':');
+  reminder.isLeadReview
+    ? `${reminder.projectId}:${reminder.iid}:${reminder.reviewerUsernameLower}:lead`
+    : [
+        reminder.projectId,
+        reminder.iid,
+        reminder.reviewerUsernameLower,
+        reminder.assignedAt.toISOString(),
+        getTrackingStart(reminder).toISOString(),
+      ].join(':');
 
 const getReviewReminder = async (
-  projectId: number,
-  iid: number,
+  mr: MergeRequestDocument,
   reviewerUsername: string,
   occurredAt: Date,
-): Promise<ReviewReminderDocument | null> =>
-  ensureReviewReminderGameStarted(
-    projectId,
-    iid,
+): Promise<ScoringReviewReminder | null> => {
+  const user = await getUserByGitlabUsername(reviewerUsername);
+  if (user?.isLead) {
+    // A stable key limits paid lead discussions without creating regular
+    // reviewer reminders or making the lead eligible for reviewer assignment.
+    const assignedAt = mr.gameStartedAt ?? mr.createdAt ?? mr.leadReviewStartedAt ?? occurredAt;
+    return {
+      projectId: mr.projectId,
+      iid: mr.iid,
+      reviewerUsername,
+      reviewerUsernameLower: reviewerUsername.toLowerCase(),
+      assignedAt,
+      reminderCount: 0,
+      isLeadReview: true,
+    };
+  }
+  return ensureReviewReminderGameStarted(
+    mr.projectId,
+    mr.iid,
     reviewerUsername,
     occurredAt,
   );
+};
 
 const recordReviewerResponse = async (
-  reminder: ReviewReminderDocument,
+  reminder: ScoringReviewReminder,
   occurredAt: Date,
+  mr: MergeRequestDocument,
 ): Promise<void> => {
   const user = await getUserByGitlabUsername(reminder.reviewerUsername);
-  if (!user || !isReviewerEnabled(user)) {
+  if (!user || !isScoringReviewParticipant(user)) {
     return;
   }
   const assignmentKey = buildReviewAssignmentKey(reminder);
-  const trackingStart = getTrackingStart(reminder);
+  if (user.isLead && (!mr.leadReviewStartedAt || occurredAt < mr.leadReviewStartedAt)) return;
+  const trackingStart = user.isLead ? mr.leadReviewStartedAt! : getTrackingStart(reminder);
   const workingMinutes = getWorkingMinutesBetween(user, trackingStart, occurredAt);
   const workdayMinutes = getWorkdayMinutes(user);
   const reward = getReviewResponseReward(workingMinutes, workdayMinutes);
@@ -135,12 +159,13 @@ export const recordReviewCommentScore = async (input: {
 }): Promise<void> => {
   const lockKey = `comment:${input.mr.projectId}:${input.mr.iid}:${input.reviewerUsername.toLowerCase()}`;
   await withScoreLock(lockKey, async () => {
-    if (!(await isScoringReviewerAvailable(input.reviewerUsername))) {
+    if (input.mr.isDraft || ['closed', 'merged'].includes(input.mr.state ?? '') ||
+      input.mr.author.gitlabUsername?.toLowerCase() === input.reviewerUsername.toLowerCase() ||
+      !(await isScoringReviewerAvailable(input.reviewerUsername))) {
       return;
     }
     const reminder = await getReviewReminder(
-      input.mr.projectId,
-      input.mr.iid,
+      input.mr,
       input.reviewerUsername,
       input.occurredAt,
     );
@@ -183,7 +208,7 @@ export const recordReviewCommentScore = async (input: {
         break;
       }
     }
-    await recordReviewerResponse(reminder, input.occurredAt);
+    await recordReviewerResponse(reminder, input.occurredAt, input.mr);
   });
 };
 
@@ -193,6 +218,7 @@ export const recordReviewApprovalScore = async (input: {
   occurredAt: Date;
 }): Promise<void> => {
   if (
+    input.mr.isDraft || ['closed', 'merged'].includes(input.mr.state ?? '') ||
     input.mr.author.gitlabUsername?.toLowerCase() === input.username.toLowerCase() ||
     !(await isScoringReviewerAvailable(input.username))
   ) {
@@ -210,19 +236,19 @@ export const recordReviewApprovalScore = async (input: {
     description: 'Approve MR',
   });
 
-  if (
+  const approver = await getUserByGitlabUsername(input.username);
+  if (approver?.isLead ||
     input.mr.reviewers?.some(
       (reviewer) => reviewer.toLowerCase() === input.username.toLowerCase(),
     )
   ) {
     const reminder = await getReviewReminder(
-      input.mr.projectId,
-      input.mr.iid,
+      input.mr,
       input.username,
       input.occurredAt,
     );
     if (reminder) {
-      await recordReviewerResponse(reminder, input.occurredAt);
+      await recordReviewerResponse(reminder, input.occurredAt, input.mr);
     }
   }
 };

@@ -28,6 +28,8 @@ import { buildGameProfileMessage, buildGameTopMessage } from './services/gameSta
 import { needsLeadReview, summarizeMergeRequestApprovals } from './services/approvalPolicy';
 import { syncOpenMergeRequests } from './services/mergeRequestSync';
 import { UserDeletionConfirmations } from './services/userDeletionConfirmation';
+import { buildGameRulesMessage } from './services/gameRulesMessage';
+import { formatSeasonInput, getSeasonKey, parseSeasonInput, shiftSeason } from './services/gameSeason';
 
 export type BotContext = Context;
 
@@ -59,9 +61,10 @@ const helpCommand = async (ctx: BotContext): Promise<any> => {
     '/my_mrs — показать активные MR, где ты автор',
     '/mrs — показать активные MR и их статус',
     '/profile — показать игровой профиль и XP',
-    '/top — показать общий сезонный топ',
-    '/top_review — показать топ ревьюеров',
-    '/top_author — показать топ авторов',
+    '/top [ММ.ГГГГ] — общий топ за выбранный месяц',
+    '/top_review [ММ.ГГГГ] — топ ревьюеров за месяц',
+    '/top_author [ММ.ГГГГ] — топ авторов за месяц',
+    '/game_rules — очки, штрафы и освобождение от ревью',
   );
   if (user?.isLead) {
     commandLines.push(
@@ -550,16 +553,32 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   const handleGameTop = async (
     ctx: BotContext,
     category?: 'review' | 'author',
+    selectedSeason?: string,
   ): Promise<void> => {
     const user = await getUserByTelegramUsername(ctx.from?.username);
     if (!user || user.isActive === false) {
       await ctx.reply('Команда доступна только разрешённым пользователям.');
       return;
     }
-    const message = await buildGameTopMessage(category);
+    const text = ctx.message && 'text' in ctx.message ? ctx.message.text.trim() : '';
+    const monthInput = text.startsWith('/') ? text.split(/\s+/).slice(1).join(' ') : '';
+    const season = selectedSeason ?? (monthInput ? parseSeasonInput(monthInput) : getSeasonKey());
+    if (!season) {
+      await ctx.reply('Укажи месяц в формате ММ.ГГГГ, например /top 09.2026. Будущий месяц выбрать нельзя.');
+      return;
+    }
+    const message = await buildGameTopMessage(category, season);
+    const currentSeason = getSeasonKey();
+    const keyboard = Markup.inlineKeyboard([
+      [0, -1, -2].map((offset) => {
+        const month = shiftSeason(currentSeason, offset);
+        return Markup.button.callback(formatSeasonInput(month), `game_top:${category ?? 'all'}:${month}`);
+      }),
+    ]);
     await ctx.reply(message, {
       parse_mode: 'HTML',
       link_preview_options: { is_disabled: true },
+      ...keyboard,
     });
   };
 
@@ -567,6 +586,24 @@ export const createBot = (token: string): Telegraf<BotContext> => {
   bot.command('top', (ctx) => handleGameTop(ctx));
   bot.command('top_review', (ctx) => handleGameTop(ctx, 'review'));
   bot.command('top_author', (ctx) => handleGameTop(ctx, 'author'));
+  bot.command('game_rules', async (ctx) => {
+    const user = await getUserByTelegramUsername(ctx.from?.username);
+    if (!user || user.isActive === false) {
+      await ctx.reply('Команда доступна только разрешённым пользователям.');
+      return;
+    }
+    await ctx.reply(buildGameRulesMessage(), { parse_mode: 'HTML' });
+  });
+  bot.action(/^game_top:(all|review|author):(\d{4}-\d{2})$/, async (ctx) => {
+    await ctx.answerCbQuery();
+    const season = parseSeasonInput(formatSeasonInput(ctx.match[2]!));
+    if (!season) {
+      await ctx.reply('Некорректный месяц. Используй /top ММ.ГГГГ.');
+      return;
+    }
+    const category = ctx.match[1] === 'review' || ctx.match[1] === 'author' ? ctx.match[1] : undefined;
+    await handleGameTop(ctx, category, season);
+  });
 
   const handleFinal = async (ctx: BotContext): Promise<void> => {
     const actor = await getUserByTelegramUsername(ctx.from?.username);

@@ -7,6 +7,9 @@ import {
 } from '../data/scoreEventRepository';
 import { escapeHtml, formatGitlabUserLabel } from '../messages/format';
 import { formatSeasonLabel, getSeasonKey } from './gameSeason';
+import { getUserByGitlabUsername } from '../data/userStore';
+import { isReviewerEnabled } from '../data/userTypes';
+import { getReviewExemptUsernames, REVIEW_REWARD_MIN_XP } from './reviewRewards';
 
 type GameLevel = {
   minXp: number;
@@ -78,11 +81,13 @@ export const buildGameProfileMessage = async (
   username: string,
 ): Promise<string> => {
   const season = getSeasonKey();
-  const [seasonTotals, allTime, recentEvents, achievements] = await Promise.all([
+  const [seasonTotals, allTime, recentEvents, achievements, exempt, user] = await Promise.all([
     listScoreTotals({ season, limit: 500 }),
     getUserScoreTotal({ username }),
     listRecentScoreEvents(username, 5),
     getAchievements(username),
+    getReviewExemptUsernames(),
+    getUserByGitlabUsername(username),
   ]);
   const usernameLower = username.toLowerCase();
   const seasonPosition = seasonTotals.findIndex(
@@ -112,6 +117,11 @@ export const buildGameProfileMessage = async (
       `До уровня «${escapeHtml(level.next.title)}»: ${Math.max(0, level.next.minXp - Math.max(0, totalXp))} XP`,
     );
   }
+  if (user?.isLead) {
+    lines.push('', 'Лиды участвуют в топе, но не освобождаются от ревью.');
+  } else if (user && isReviewerEnabled(user) && exempt.has(usernameLower)) {
+    lines.push('', `🎁 Ты освобождён от новых назначений, пока входишь в первые два места общего топа с ${REVIEW_REWARD_MIN_XP} XP. Уже назначенные MR остаются за тобой.`);
+  }
   if (achievements.length) {
     lines.push('', '<b>Достижения</b>', ...achievements);
   }
@@ -133,8 +143,8 @@ const getTopTitle = (category?: ScoreCategory): string => {
 
 export const buildGameTopMessage = async (
   category?: ScoreCategory,
+  season = getSeasonKey(),
 ): Promise<string> => {
-  const season = getSeasonKey();
   const totals = await listScoreTotals({
     season,
     ...(category ? { category } : {}),
@@ -144,7 +154,9 @@ export const buildGameTopMessage = async (
     `🏆 <b>${getTopTitle(category)} — ${escapeHtml(formatSeasonLabel(season))}</b>`,
   ];
   if (!totals.length) {
-    lines.push('', 'В новом сезоне пока нет начислений.');
+    lines.push('', season === getSeasonKey()
+      ? 'В этом сезоне пока нет начислений.'
+      : 'За этот месяц нет сохранённых начислений. История ведётся с момента запуска игровой системы.');
     return lines.join('\n');
   }
   const medals = ['🥇', '🥈', '🥉'];
@@ -152,9 +164,19 @@ export const buildGameTopMessage = async (
     const total = totals[index];
     if (!total) continue;
     const userLabel = await formatGitlabUserLabel(total.username);
+    let reward = '';
+    if (!category && season === getSeasonKey() && index < 2 && total.points >= REVIEW_REWARD_MIN_XP) {
+      const user = await getUserByGitlabUsername(total.username);
+      reward = user?.isLead
+        ? ' · лид, без освобождения'
+        : user && isReviewerEnabled(user) ? ' · 🎁 без новых ревью' : '';
+    }
     lines.push(
-      `${medals[index] ?? `${index + 1}.`} ${userLabel} — ${total.points} XP`,
+      `${medals[index] ?? `${index + 1}.`} ${userLabel} — ${total.points} XP${reward}`,
     );
+  }
+  if (!category && season === getSeasonKey()) {
+    lines.push('', `🎁 Места №1–2 с результатом от ${REVIEW_REWARD_MIN_XP} XP освобождают от новых ревью. Лиды не освобождаются, их места не передаются дальше.`);
   }
   return lines.join('\n');
 };

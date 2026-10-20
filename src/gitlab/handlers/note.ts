@@ -11,6 +11,7 @@ import {
 } from '../../messages/recipients';
 import { markReviewCompletedForReviewer } from '../../services/reviewReminderService';
 import { recordReviewCommentScore, runGameAction } from '../../services/gameScoring';
+import { getUserByGitlabUsername } from '../../data/userStore';
 
 const parseDate = (value?: string): Date => {
   if (!value) {
@@ -60,6 +61,8 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
         (reviewer) => reviewer.toLowerCase() === commenter.toLowerCase(),
       ),
   );
+  const commenterUser = commenter ? await getUserByGitlabUsername(commenter) : undefined;
+  const isReviewParticipant = isAssignedReviewer || commenterUser?.isLead === true;
   const noteAttributes = payload.object_attributes ?? {};
   const noteId = noteAttributes.id;
   const discussionKey = noteAttributes.discussion_id ?? noteId;
@@ -68,7 +71,7 @@ export const handleNoteEvent = async (payload: any, bot: Telegraf<BotContext>): 
     (!noteAttributes.action || noteAttributes.action === 'create');
   if (
     commenter &&
-    isAssignedReviewer &&
+    isReviewParticipant &&
     isNewHumanComment &&
     noteId !== undefined &&
     discussionKey !== undefined

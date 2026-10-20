@@ -79,6 +79,7 @@ before(() => {
         gitlabUsername: username,
         isAllowed: true,
         isActive: true,
+        isLead: username === 'tech.lead',
       }),
     },
   } as NodeJS.Module;
@@ -169,5 +170,54 @@ describe('game scoring idempotency', () => {
     assert.equal(approveEvents[0]?.points, 30);
     assert.equal(unapproveEvents.length, 1);
     assert.equal(unapproveEvents[0]?.points, -30);
+  });
+
+  it('pays lead comments and approval with one response bonus after the review stage starts', async () => {
+    const leadMr = {
+      ...mr, iid: 11,
+      createdAt: new Date('2026-07-27T06:00:00.000Z'),
+      leadReviewStartedAt: new Date('2026-07-27T06:00:00.000Z'),
+    };
+    const initialCount = events.size;
+    await scoring.recordReviewCommentScore({
+      mr: leadMr, reviewerUsername: 'tech.lead', noteId: 'lead-note',
+      discussionKey: 'lead-discussion', occurredAt,
+    });
+    await scoring.recordReviewApprovalScore({ mr: leadMr, username: 'tech.lead', occurredAt });
+    const leadEvents = [...events.values()].slice(initialCount);
+    assert.deepEqual(leadEvents.map((event) => event.points), [20, 15, 30]);
+    const afterFirstDelivery = events.size;
+    await scoring.recordReviewCommentScore({
+      mr: leadMr, reviewerUsername: 'tech.lead', noteId: 'lead-note',
+      discussionKey: 'lead-discussion', occurredAt,
+    });
+    await scoring.recordReviewApprovalScore({ mr: leadMr, username: 'tech.lead', occurredAt });
+    assert.equal(events.size, afterFirstDelivery);
+  });
+
+  it('limits lead comments before the final-review invitation without awarding early response XP', async () => {
+    const leadMr = { ...mr, iid: 12 };
+    const initialCount = events.size;
+    for (let index = 0; index < 5; index += 1) {
+      await scoring.recordReviewCommentScore({
+        mr: leadMr, reviewerUsername: 'tech.lead', noteId: `early-${index}`,
+        discussionKey: `early-discussion-${index}`,
+        occurredAt: new Date(occurredAt.getTime() + index * 60_000),
+      });
+    }
+    const leadEvents = [...events.values()].slice(initialCount);
+    assert.deepEqual(leadEvents.map((event) => event.points), [20, 10, 5]);
+  });
+
+  it('does not score lead self-review or review on Draft/closed MRs', async () => {
+    const initialCount = events.size;
+    for (const update of [{ author: { gitlabUsername: 'tech.lead' } }, { isDraft: true }, { state: 'closed' }]) {
+      const leadMr = { ...mr, iid: 13, ...update };
+      await scoring.recordReviewCommentScore({
+        mr: leadMr, reviewerUsername: 'tech.lead', noteId: 'own', discussionKey: 'own', occurredAt,
+      });
+      await scoring.recordReviewApprovalScore({ mr: leadMr, username: 'tech.lead', occurredAt });
+    }
+    assert.equal(events.size, initialCount);
   });
 });

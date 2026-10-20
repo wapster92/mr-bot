@@ -26,3 +26,21 @@ export const formatSeasonLabel = (season: string): string => {
   }).format(date);
   return `${month} ${match[1]}`;
 };
+
+export const shiftSeason = (season: string, months: number): string => {
+  const [year, month] = season.split('-').map(Number);
+  const date = new Date(Date.UTC(year!, month! - 1 + months, 1));
+  return `${date.getUTCFullYear()}-${String(date.getUTCMonth() + 1).padStart(2, '0')}`;
+};
+
+export const formatSeasonInput = (season: string): string => {
+  const [year, month] = season.split('-');
+  return `${month}.${year}`;
+};
+
+export const parseSeasonInput = (input: string, now = new Date()): string | undefined => {
+  const match = /^(0[1-9]|1[0-2])\.(\d{4})$/.exec(input.trim());
+  if (!match || Number(match[2]) < 1970) return undefined;
+  const season = `${match[2]}-${match[1]}`;
+  return season <= getSeasonKey(now) ? season : undefined;
+};

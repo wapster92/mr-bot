@@ -139,6 +139,7 @@ export const syncMergeRequestFromGitlab = async (
     mr.reviewers = state.reviewers;
     mr.reviewerLabels = state.reviewerLabels;
     mr.approvalRequestedAt = state.approvalRequestedAt;
+    mr.leadReviewStartedAt = state.leadReviewStartedAt;
     mr.reviewerLabelsCleanupPending = ['closed', 'merged'].includes(mr.state ?? '') && !state.labelsSyncOk;
     if (state.labelsSyncOk) {
       mr.reviewersSyncedAt = now;

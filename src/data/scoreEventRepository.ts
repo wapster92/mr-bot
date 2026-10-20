@@ -60,6 +60,9 @@ export type ScoreTotal = {
 
 const COLLECTION_NAME = 'score_events';
 let collectionInitialization: Promise<Collection<ScoreEventDocument>> | undefined;
+let scoreVersion = 0;
+
+export const getScoreVersion = (): number => scoreVersion;
 
 const initializeCollection = async (): Promise<Collection<ScoreEventDocument>> => {
   const db = await getDb();
@@ -93,6 +96,7 @@ export const addScoreEvent = async (
       usernameLower: input.username.toLowerCase(),
       season: getSeasonKey(input.occurredAt),
     });
+    scoreVersion += 1;
     console.info(
       `[game] ${input.username} ${input.points >= 0 ? '+' : ''}${input.points} ${input.eventType} ${input.projectId}/${input.iid}`,
     );

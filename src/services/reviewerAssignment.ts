@@ -7,6 +7,7 @@ import {
   syncReviewerLabelsToGitlab,
 } from './reviewerLabelSync';
 import { buildReviewLabelPlan, MERGE_READY_LABEL } from './reviewLabelPlan';
+import { summarizeMergeRequestApprovals } from './approvalPolicy';
 
 const REQUIRED_REVIEWERS = 2;
 
@@ -43,6 +44,7 @@ export type ReviewerReconciliation = {
   reviewers: string[];
   reviewerLabels: string[];
   approvalRequestedAt: Record<string, Date>;
+  leadReviewStartedAt: Date | null;
   approvalsComplete: boolean;
   reviewersChanged: boolean;
   labelsSyncOk: boolean;
@@ -87,6 +89,15 @@ export const reconcileReviewersForMr = async (
     [...leads, ...reviewerUsers.filter((user) => user !== undefined)],
     now,
   );
+  const summary = summarizeMergeRequestApprovals(
+    { ...mr, reviewers },
+    new Set(leads.map((lead) => lead.gitlabUsername.toLowerCase())),
+    new Set(reviewers.map((username) => username.toLowerCase())),
+  );
+  const leadReviewStartedAt = !mr.isDraft && !['closed', 'merged'].includes(mr.state ?? '') &&
+    summary.developerApprovers.length > 0
+    ? mr.leadReviewStartedAt ?? now
+    : null;
   const reviewerLabels = plan.labels.map((label) => label.name);
   const labelsSync = await syncReviewerLabelsToGitlab(
     mr.projectId,
@@ -111,6 +122,7 @@ export const reconcileReviewersForMr = async (
       ? reviewerLabels
       : [...new Set([...previousReviewerLabels, ...reviewerLabels])],
     approvalRequestedAt: plan.approvalRequestedAt,
+    leadReviewStartedAt,
     approvalsComplete: plan.labels.some((label) => label.name === MERGE_READY_LABEL.name),
     reviewersChanged,
     labelsSyncOk: labelsSync.ok,

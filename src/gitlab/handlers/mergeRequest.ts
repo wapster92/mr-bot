@@ -273,6 +273,7 @@ const handleMergeRequestEventUnlocked = async (
   doc.reviewers = reviewerState.reviewers;
   doc.reviewerLabels = reviewerState.reviewerLabels;
   doc.approvalRequestedAt = reviewerState.approvalRequestedAt;
+  doc.leadReviewStartedAt = reviewerState.leadReviewStartedAt;
   doc.reviewerLabelsCleanupPending =
     ['closed', 'merged'].includes(doc.state ?? '') && !reviewerState.labelsSyncOk;
   if (reviewerState.labelsSyncOk) {
