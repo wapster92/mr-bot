@@ -19,6 +19,10 @@ before(() => {
   mockModule('@gitbeaker/rest', {
     Gitlab: class {
       MergeRequests = {
+        allDiffVersions: async () => [
+          { created_at: '2026-10-20T10:00:00Z', head_commit_sha: 'older' },
+          { created_at: '2026-10-21T10:00:00Z', head_commit_sha: 'latest' },
+        ],
         show: async () => ({
           state: 'closed', closed_at: '2026-09-01T09:00:00Z', merged_at: '2026-09-02T09:00:00Z',
           merge_user: { id: 1, username: 'actual.merger', name: 'Merger' },
@@ -31,7 +35,8 @@ before(() => {
           if (unavailable) throw new Error('Test API unavailable');
           return [
             { individual_note: true, notes: [
-              { type: null, author: { username: 'reviewer' }, system: false },
+              { type: null, author: { username: 'reviewer' }, system: false,
+                created_at: '2026-10-22T10:00:00Z', updated_at: '2026-10-23T10:00:00Z' },
             ] },
             { individual_note: false, notes: [
               { type: 'DiffNote', author: { username: 'lead' }, system: false },
@@ -56,7 +61,7 @@ describe('GitLab review comment history', () => {
 
   it('reads ordinary, inline and thread comments through the paginated Discussions API', async () => {
     assert.deepEqual(await api.fetchMergeRequestNotes(1, 2), [
-      { authorUsername: 'reviewer', system: false },
+      { authorUsername: 'reviewer', system: false, createdAt: '2026-10-22T10:00:00Z' },
       { authorUsername: 'lead', system: false },
       { authorUsername: 'reply', system: false },
       { authorUsername: 'system', system: true },
@@ -68,6 +73,12 @@ describe('GitLab review comment history', () => {
     const mr = await api.fetchMergeRequest(1, 2);
     assert.deepEqual(mr?.merge_user, { id: 1, username: 'actual.merger', name: 'Merger' });
     assert.deepEqual(mr?.merged_by, { id: 2, username: 'legacy.merger', name: 'Legacy' });
+  });
+
+  it('uses the newest diff version timestamp rather than MR updated_at or commit authorship time', async () => {
+    assert.deepEqual(await api.fetchMergeRequestLatestDiff(1, 2), {
+      createdAt: '2026-10-21T10:00:00Z', headSha: 'latest',
+    });
   });
 
   it('does not treat an API error as successfully loaded empty history', async () => {

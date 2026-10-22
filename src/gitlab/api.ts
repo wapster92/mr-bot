@@ -8,6 +8,7 @@ type GitlabUser = {
 };
 
 export type GitlabMergeRequest = {
+  sha?: string;
   author?: GitlabUser;
   merge_user?: GitlabUser;
   merged_by?: GitlabUser;
@@ -38,6 +39,7 @@ export type GitlabApprovals = {
 
 export type GitlabMergeRequestNote = {
   authorUsername?: string;
+  createdAt?: string;
   system: boolean;
 };
 
@@ -53,8 +55,24 @@ export const fetchMergeRequestNotes = async (
   // Discussions includes ordinary comments, threads and inline diff notes.
   return discussions?.flatMap((discussion) => discussion.notes ?? []).map((note) => ({
     ...(note.author?.username ? { authorUsername: note.author.username } : {}),
+    ...(typeof note.created_at === 'string' ? { createdAt: note.created_at } : {}),
     system: note.system,
   }));
+};
+
+export const fetchMergeRequestLatestDiff = async (
+  projectId: number,
+  iid: number,
+): Promise<{ createdAt?: string; headSha?: string } | undefined> => {
+  const api = getApiConfig();
+  if (!api) return undefined;
+  const versions = await withRetry(api, `MergeRequests.allDiffVersions ${projectId}#${iid}`, () =>
+    getClient(api).MergeRequests.allDiffVersions(projectId, iid),
+  );
+  if (!versions) return undefined;
+  const latest = versions.filter((version) => Number.isFinite(Date.parse(version.created_at)))
+    .sort((left, right) => Date.parse(right.created_at) - Date.parse(left.created_at))[0];
+  return latest ? { createdAt: latest.created_at, headSha: latest.head_commit_sha } : {};
 };
 
 export type GitlabPipelineJob = {
@@ -220,6 +238,7 @@ export const fetchMergeRequest = async (
     return undefined;
   }
   const result: GitlabMergeRequest = {};
+  if (typeof response.sha === 'string') result.sha = response.sha;
   const author = toGitlabUser(response?.author);
   if (author) {
     result.author = author;

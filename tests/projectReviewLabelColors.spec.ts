@@ -138,7 +138,8 @@ describe('stable personal labels and per-MR overdue status', () => {
   it('includes mandatory volunteers without assigning them to the reviewer pair', () => {
     Object.assign(mrs[0]!, { reviewCommenters: ['volunteer'],
       approvedBy: ['reviewer.one', 'tech.lead', 'team.lead'],
-      approvalRequestedAt: { volunteer: friday } });
+      approvalRequestedAt: { volunteer: friday }, reviewCodeUpdatedAt: friday,
+      reviewCommentedAt: { volunteer: new Date(friday.getTime() - 60_000) } });
     assert.equal(projectColors().get('Доброволец'), URGENCY_COLORS.danger);
     assert.deepEqual(mrs[0]!.reviewers, ['reviewer.one', 'reviewer.two']);
     mrs[0]!.approvedBy!.push('volunteer');

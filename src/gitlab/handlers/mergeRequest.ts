@@ -207,7 +207,7 @@ const handleMergeRequestEventUnlocked = async (
     existingDoc, apiApprovals, approvalEvent, config.approvals.defaultRequired,
   ));
 
-  Object.assign(doc, await loadReviewCommentHistory(doc));
+  Object.assign(doc, await loadReviewCommentHistory(doc, { headSha: apiMergeRequest?.sha }));
   if (attrs.action === 'merge') {
     // merge_user identifies the person responsible for an auto-merge as well.
     // Older GitLab versions expose only merged_by; the webhook actor is the fallback.

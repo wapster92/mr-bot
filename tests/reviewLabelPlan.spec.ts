@@ -141,6 +141,8 @@ describe('review labels and approval deadlines', () => {
     const doc = { ...mr, reviewCommenters: ['volunteer'],
       approvedBy: ['reviewer.one', 'reviewer.two', 'tech.lead', 'team.lead'],
       approvalRequestedAt: { volunteer: friday },
+      reviewCommentedAt: { volunteer: new Date(friday.getTime() - 60_000) },
+      reviewCodeUpdatedAt: friday,
     };
     const plan = buildReviewLabelPlan(doc, [...users, volunteer, volunteer], monday);
     assert.deepEqual(plan.labels, [

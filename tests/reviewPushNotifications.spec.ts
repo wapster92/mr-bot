@@ -63,6 +63,7 @@ before(() => {
       return approvalApiAvailable ? { approved_by: approvals.map((username) => ({ user: { username } })) } : undefined;
     },
     fetchMergeRequestNotes: async () => { noteReads += 1; return historicalNotes; },
+    fetchMergeRequestLatestDiff: async () => ({}),
   });
   mockModule('../src/gitlab/handlers/common.ts', { persistGitlabUserProfileFromPayload: async () => {} });
   mockModule('../src/services/gameScoring.ts', {
@@ -243,6 +244,44 @@ const push = (sha = 'sha-1', extra: Record<string, unknown> = {}): Promise<void>
 }, bot);
 
 const pushMessages = (): NotificationQueueDocument[] => queued.filter((item) => item.eventType === 'mr_push');
+
+describe('responsibility transitions in push and comment webhooks', () => {
+  it('cancels a pending push reminder after a reviewer comments without approving', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-22T06:00:00Z') });
+    await comment('reviewer.one', { created_at: '2026-10-22T06:00:00Z' });
+    withinHours = false; t.mock.timers.setTime(Date.parse('2026-10-22T07:00:00Z'));
+    await push('head-1', { event_created_at: '2026-10-22T07:00:00Z' });
+    assert.equal(pushMessages()[0]?.status, 'pending');
+    t.mock.timers.setTime(Date.parse('2026-10-22T08:00:00Z'));
+    await comment('reviewer.one', { created_at: '2026-10-22T08:00:00Z' });
+    withinHours = true; await notifications.flushNotificationQueue(bot);
+    assert.equal(pushMessages()[0]?.status, 'cancelled');
+    assert.deepEqual(mr.approvedBy, []);
+  });
+
+  it('records an author reply even for an unregistered author, without notifying or scoring the author', async () => {
+    users = users.filter((user) => user.gitlabUsername !== 'author');
+    await comment('author', { created_at: '2026-10-22T08:00:00Z' });
+    assert.deepEqual(mr.reviewAuthorCommentedAt, new Date('2026-10-22T08:00:00Z'));
+    assert.deepEqual(scoredCommenters, []);
+    assert.deepEqual(sent, []);
+  });
+
+  it('does not restart the code-update clock from a replayed push without a timestamp', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-22T07:00:00Z') });
+    await push('head-1');
+    const original = mr.reviewCodeUpdatedAt;
+    t.mock.timers.setTime(Date.parse('2026-10-23T07:00:00Z'));
+    await push('head-1');
+    assert.deepEqual(mr.reviewCodeUpdatedAt, original);
+  });
+
+  it('does not replace a newer author reply with a delayed older webhook', async () => {
+    await comment('author', { created_at: '2026-10-22T09:00:00Z' });
+    await comment('author', { created_at: '2026-10-22T08:00:00Z' });
+    assert.deepEqual(mr.reviewAuthorCommentedAt, new Date('2026-10-22T09:00:00Z'));
+  });
+});
 
 describe('updates after reviewer and lead comments', () => {
   it('scores a voluntary code comment and subscribes the commenter without changing assigned reviewers', async () => {

@@ -41,6 +41,12 @@ export type MergeRequestDocument = {
   approvedBy?: string[];
   mergeApprovalAudit?: MergeApprovalAudit;
   reviewCommenters?: string[];
+  reviewCommentedAt?: Record<string, Date>;
+  reviewAuthorCommentedAt?: Date;
+  reviewCodeUpdatedAt?: Date;
+  reviewCodeHeadSha?: string;
+  reviewActivitySyncedAt?: Date;
+  reviewActivitySyncPending?: boolean;
   reviewCommentsSyncedAt?: Date;
   reviewCommentRequirementsSyncedAt?: Date;
   reviewCommentHistorySyncPending?: boolean;

@@ -19,7 +19,9 @@ let mrState = 'opened';
 let approvalApiAvailable = true;
 let nextProjectId = 200;
 let remindersStopped = 0;
-let historicalNotes: Array<{ authorUsername: string; system: boolean }> | undefined = [];
+let historicalNotes: Array<{ authorUsername: string; system: boolean; createdAt?: string }> | undefined = [];
+let latestDiff: { createdAt?: string; headSha?: string } | undefined = {};
+let apiSha: string | undefined;
 let historyReads = 0;
 let mergeUser: { username?: string; name?: string; id?: number } | undefined;
 let mergedBy: { username?: string; name?: string; id?: number } | undefined;
@@ -49,12 +51,14 @@ before(() => {
       labels: [...labels], title: 'Test', state: mrState, draft,
       author: { username: stored.author.gitlabUsername },
       merge_user: mergeUser, merged_by: mergedBy,
+      sha: apiSha,
     }),
     fetchMergeRequestApprovals: async () => approvalApiAvailable
       ? { approved_by: approvals.map((username) => ({ user: { username } })) }
       : undefined,
     fetchProjectLabels: async () => [],
     fetchMergeRequestNotes: async () => { historyReads += 1; return historicalNotes; },
+    fetchMergeRequestLatestDiff: async () => latestDiff,
     ensureProjectLabel: async (_projectId: number, label: ReviewLabel) => {
       definitionCount += 1;
       return { id: definitionCount, ...label, isProjectLabel: true };
@@ -153,6 +157,7 @@ beforeEach(() => {
   editCount = 0; selections = 0; definitionCount = 0; remindersStopped = 0;
   notifications.length = 0;
   historicalNotes = [];
+  latestDiff = {}; apiSha = undefined;
   historyReads = 0; readyKeys.length = 0;
   mergeUser = undefined; mergedBy = undefined; mergeAlerts.length = 0; mergedScores = 0;
   mergerWarnings.length = 0;
@@ -360,10 +365,61 @@ const event = async (action = 'update', username = 'reviewer.one'): Promise<void
   }, bot);
 };
 
-const comment = (username: string): Promise<void> => noteHandler.handleNoteEvent({
+const comment = (username: string, createdAt?: string): Promise<void> => noteHandler.handleNoteEvent({
   user: { username }, merge_request: { target_project_id: stored.projectId, iid: stored.iid },
-  object_attributes: { id: 100, discussion_id: 'thread', noteable_type: 'MergeRequest', action: 'create', note: 'Замечание' },
+  object_attributes: { id: 100, discussion_id: 'thread', noteable_type: 'MergeRequest', action: 'create',
+    note: 'Замечание', ...(createdAt ? { created_at: createdAt } : {}) },
 }, bot);
+
+describe('responsibility in the complete review workflow', () => {
+  it('backfills response order and removes overdue status after an author comment without needing a push', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T07:00:00Z') });
+    const assigned = new Date('2026-10-21T06:00:00Z');
+    stored.approvalRequestedAt = { 'reviewer.one': assigned, 'reviewer.two': assigned };
+    latestDiff = { createdAt: '2026-10-22T06:00:00Z', headSha: 'head-1' }; apiSha = 'head-1';
+    historicalNotes = [
+      { authorUsername: 'reviewer.one', createdAt: '2026-10-22T07:00:00Z', system: false },
+      { authorUsername: 'reviewer.two', createdAt: '2026-10-21T07:00:00Z', system: false },
+    ];
+    await event();
+    assert.ok(labels.includes('Ревью: более суток'));
+    assert.equal(stored.reviewCodeHeadSha, 'head-1');
+    assert.deepEqual(stored.reviewCommentedAt?.['reviewer.one'], new Date('2026-10-22T07:00:00Z'));
+    t.mock.timers.setTime(Date.parse('2026-10-23T07:10:00Z'));
+    await comment('author', '2026-10-23T07:10:00Z');
+    assert.deepEqual(stored.reviewAuthorCommentedAt, new Date('2026-10-23T07:10:00Z'));
+    assert.ok(!labels.some((label) => label.startsWith('Ревью:')));
+    assert.deepEqual(stored.approvalRequestedAt, { 'reviewer.one': assigned, 'reviewer.two': assigned });
+    assert.deepEqual(stored.reviewers, ['reviewer.one', 'reviewer.two']);
+    assert.equal(notifications.filter((item) => item.eventType === 'mr_comment').length, 0);
+  });
+
+  it('recovers a missed push when the MR HEAD changes, but ignores repeated label-update webhooks', async (t) => {
+    t.mock.timers.enable({ apis: ['Date'], now: new Date('2026-10-23T07:00:00Z') });
+    latestDiff = { createdAt: '2026-10-22T06:00:00Z', headSha: 'head-1' }; apiSha = 'head-1';
+    await event();
+    for (let i = 0; i < 10; i += 1) await event();
+    assert.equal(historyReads, 1);
+    latestDiff = { createdAt: '2026-10-23T07:01:00Z', headSha: 'head-2' }; apiSha = 'head-2';
+    t.mock.timers.setTime(Date.parse('2026-10-23T07:01:00Z'));
+    await event();
+    assert.equal(historyReads, 2);
+    assert.deepEqual(stored.reviewCodeUpdatedAt, new Date('2026-10-23T07:01:00Z'));
+    for (let i = 0; i < 10; i += 1) await event();
+    assert.equal(historyReads, 2);
+  });
+
+  it('does not hand off responsibility on author note edits, deletion or system notes', async () => {
+    for (const extra of [{ action: 'update' }, { action: 'delete' }, { system: true }]) {
+      await noteHandler.handleNoteEvent({
+        user: { username: 'author' }, merge_request: { target_project_id: stored.projectId, iid: stored.iid },
+        object_attributes: { noteable_type: 'MergeRequest', action: 'create', created_at: '2026-10-22T06:00:00Z', ...extra },
+      }, bot);
+    }
+    assert.equal(stored.reviewAuthorCommentedAt, undefined);
+    assert.equal(historyReads, 0);
+  });
+});
 
 describe('webhook and periodic review workflow', () => {
   it('sends creation notifications through the lifecycle service after saving assigned reviewers', async () => {

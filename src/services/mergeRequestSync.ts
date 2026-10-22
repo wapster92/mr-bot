@@ -139,7 +139,7 @@ export const syncMergeRequestFromGitlab = async (
       ...(approvals?.approved_by ?? []).flatMap((item) => item.user ? [item.user] : []),
     ]);
     const now = new Date();
-    Object.assign(mr, await loadReviewCommentHistory(mr));
+    Object.assign(mr, await loadReviewCommentHistory(mr, { headSha: apiMr?.sha }));
     mr.finishedAt = getMergeRequestFinishedAt(mr, stored, parseDate(
       mr.state === 'merged' ? apiMr?.merged_at : apiMr?.closed_at,
     ), parseDate(apiMr?.updated_at) ?? now);

@@ -18,6 +18,7 @@ import { shouldNotifyReviewUpdate } from '../../services/pushReviewNotifications
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
 import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
 import { refreshProjectReviewLabelColors } from '../../services/projectReviewLabelColors';
+import { recordReviewCodeUpdate } from '../../services/reviewResponsibility';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -54,7 +55,7 @@ const handlePushEventUnlocked = async (
   const [apiMr, approvals, commentHistory] = await Promise.all([
     fetchMergeRequest(doc.projectId, doc.iid),
     fetchMergeRequestApprovals(doc.projectId, doc.iid),
-    loadReviewCommentHistory(doc),
+    loadReviewCommentHistory(doc, { headSha: commitSha }),
   ]);
   const update: Partial<MergeRequestDocument> = { ...commentHistory, lastLintStatus: 'pending' };
   if (apiMr?.state !== undefined) update.state = apiMr.state;
@@ -66,11 +67,16 @@ const handlePushEventUnlocked = async (
       .map((item) => item.user?.username)
       .filter((name): name is string => Boolean(name));
   }
+  const pushedAt = parseDate(payload.event_created_at) ?? new Date();
+  // Ignore a delayed push for an old HEAD. Repeated deliveries of the same SHA
+  // must not restart anyone's timer, even when event_created_at is absent.
+  if (!apiMr?.sha || apiMr.sha === commitSha) {
+    Object.assign(update, recordReviewCodeUpdate({ ...doc, ...update }, commitSha, pushedAt));
+  }
   const current = { ...doc, ...update };
   update.finishedAt = getMergeRequestFinishedAt(current, doc, parseDate(
     current.state === 'merged' ? apiMr?.merged_at : apiMr?.closed_at,
   ), parseDate(apiMr?.updated_at) ?? new Date());
-  const pushedAt = parseDate(payload.event_created_at) ?? new Date();
   await updateMergeRequest(doc.projectId, doc.iid, update);
   await clearMergeRequestGameReady(doc.projectId, doc.iid);
   await refreshProjectReviewLabelColors(doc.projectId);

@@ -6,6 +6,7 @@ import {
   summarizeMergeRequestApprovals,
 } from './approvalPolicy';
 import { addWorkingMinutes, getWorkdayMinutes } from './workingHours';
+import { getReviewResponseDueSince } from './reviewResponsibility';
 
 export type ReviewLabel = { name: string; color: string };
 export type ReviewUrgency = 'normal' | 'warning' | 'danger';
@@ -97,7 +98,7 @@ export const buildReviewLabelPlan = (
       ? mr.approvalRequestedAt?.[username] ?? now
       : undefined;
     if (requestedAt) approvalRequestedAt[username] = requestedAt;
-    const urgency = getReviewUrgency(user, requestedAt, now);
+    const urgency = getReviewUrgency(user, getReviewResponseDueSince(mr, username, requestedAt), now);
     if (urgencyRank[urgency] > urgencyRank[worstUrgency]) worstUrgency = urgency;
     return buildPersonalReviewLabel(
       user,
