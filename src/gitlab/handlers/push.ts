@@ -17,6 +17,7 @@ import { fetchMergeRequest, fetchMergeRequestApprovals } from '../api';
 import { shouldNotifyReviewUpdate } from '../../services/pushReviewNotifications';
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
 import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
+import { refreshProjectReviewLabelColors } from '../../services/projectReviewLabelColors';
 
 const normalizeRef = (ref?: string): string | undefined => {
   if (!ref) {
@@ -72,6 +73,7 @@ const handlePushEventUnlocked = async (
   const pushedAt = parseDate(payload.event_created_at) ?? new Date();
   await updateMergeRequest(doc.projectId, doc.iid, update);
   await clearMergeRequestGameReady(doc.projectId, doc.iid);
+  await refreshProjectReviewLabelColors(doc.projectId);
 
   const actorUsername = payload.user_username ?? payload.user?.username;
   if (

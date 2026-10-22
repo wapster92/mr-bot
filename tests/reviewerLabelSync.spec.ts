@@ -101,8 +101,8 @@ describe('GitLab label synchronization loop protection', () => {
     assert.equal(writes.length, 0);
   });
 
-  it('creates fixed-color label definitions once and reuses them across MRs', async () => {
-    const label = { name: '🚨 Ревью: Reviewer (@reviewer)', color: '#d9534f' };
+  it('creates label definitions once and reuses them across MRs', async () => {
+    const label = { name: 'Reviewer', color: '#428bca' };
     await sync.syncReviewerLabelsToGitlab(107, 1, [], [], [label.name], [label]);
     await sync.syncReviewerLabelsToGitlab(107, 2, [], [], [label.name], [label]);
     await sync.syncReviewerLabelsToGitlab(107, 1, [label.name], [label.name], [label.name], [label]);
@@ -113,7 +113,7 @@ describe('GitLab label synchronization loop protection', () => {
 
   it('throttles failed label creation and does not attach an incorrectly colored label', async () => {
     failDefinition = true;
-    const label = { name: '🚨 Ревью: Failed (@failed)', color: '#d9534f' };
+    const label = { name: 'Failed', color: '#428bca' };
     for (let i = 0; i < 10; i += 1) {
       assert.equal((await sync.syncReviewerLabelsToGitlab(108, i, [], [], [label.name], [label])).ok, false);
     }

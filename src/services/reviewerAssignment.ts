@@ -6,7 +6,7 @@ import {
   buildReviewerLabels,
   syncReviewerLabelsToGitlab,
 } from './reviewerLabelSync';
-import { buildReviewLabelPlan, MERGE_READY_LABEL } from './reviewLabelPlan';
+import { buildReviewLabelPlan, isReviewStatusLabel, MERGE_READY_LABEL, URGENCY_COLORS } from './reviewLabelPlan';
 
 const REQUIRED_REVIEWERS = 2;
 
@@ -95,7 +95,10 @@ export const reconcileReviewersForMr = async (
     currentGitlabLabels,
     previousReviewerLabels,
     reviewerLabels,
-    plan.labels,
+    // Start new names in blue; existing personal colors belong exclusively to
+    // the project aggregate. A normal MR must never undo another MR's red color.
+    plan.labels.map((label) => isReviewStatusLabel(label.name)
+      ? label : { ...label, color: URGENCY_COLORS.normal }),
   );
   const reviewersChanged = !areSameReviewers(previousReviewers, reviewers);
   if (reviewersChanged) {

@@ -22,6 +22,7 @@ import {
 } from '../../services/mergeRequestLifecycleNotifications';
 import { withMergeRequestLock } from '../../services/mergeRequestLock';
 import { getMergeRequestFinishedAt } from '../../services/mergeRequestRetention';
+import { refreshProjectReviewLabelColors } from '../../services/projectReviewLabelColors';
 import { loadReviewCommentHistory } from '../../services/reviewCommentHistory';
 import {
   markAllRemindersInactiveForMr,
@@ -262,6 +263,7 @@ const handleMergeRequestEventUnlocked = async (
       actorName: payload.user?.name, updatedAt: attrs.updated_at,
     });
     await markAllRemindersInactiveForMr({ projectId: doc.projectId, iid: doc.iid });
+    await refreshProjectReviewLabelColors(doc.projectId);
     return;
   }
 
@@ -284,6 +286,7 @@ const handleMergeRequestEventUnlocked = async (
       updatedAt ?? new Date(),
     );
   });
+  await refreshProjectReviewLabelColors(doc.projectId);
 };
 
 export const handleMergeRequestEvent = async (

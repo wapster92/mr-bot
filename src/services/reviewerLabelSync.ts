@@ -9,7 +9,7 @@ import {
   updateMergeRequestLabels,
   type GitlabProjectLabel,
 } from '../gitlab/api';
-import type { ReviewLabel } from './reviewLabelPlan';
+import { isReviewStatusLabel, type ReviewLabel } from './reviewLabelPlan';
 
 const LABEL_EDIT_COOLDOWN_MS = 2 * 60 * 1000;
 const recentSuccessfulTargets = new Map<string, number>();
@@ -18,46 +18,65 @@ const projectLabelCache = new Map<number, { fetchedAt: number; labels: GitlabPro
 const labelAttempts = new Map<string, number>();
 let labelDefinitionOperation = Promise.resolve();
 
-const ensureReviewLabelDefinitions = async (
-  projectId: number,
-  definitions: ReviewLabel[],
-): Promise<boolean> => {
-  if (!definitions.length) return true;
+const withLabelDefinitionLock = async <T>(operation: () => Promise<T>): Promise<T> => {
   const previous = labelDefinitionOperation;
   let release = (): void => {};
   labelDefinitionOperation = new Promise<void>((resolve) => { release = resolve; });
   await previous.catch(() => {});
   try {
-    const now = Date.now();
-    let cached = projectLabelCache.get(projectId);
-    if (!cached || now - cached.fetchedAt > 5 * 60 * 1000) {
-      const key = `${projectId}:list`;
-      const attemptedAt = labelAttempts.get(key);
-      if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) return false;
-      labelAttempts.set(key, now);
-      const labels = await fetchProjectLabels(projectId);
-      if (!labels) return false;
-      cached = { fetchedAt: now, labels };
-      projectLabelCache.set(projectId, cached);
-    }
-    pruneRecentEntries(labelAttempts, now);
-    for (const definition of definitions) {
-      const existing = cached.labels.find((label) => label.name === definition.name);
-      if (existing?.color.toLowerCase() === definition.color.toLowerCase()) continue;
-      const key = `${projectId}:${definition.name}`;
-      const attemptedAt = labelAttempts.get(key);
-      if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) return false;
-      labelAttempts.set(key, now);
-      const ensured = await ensureProjectLabel(projectId, definition, existing);
-      if (!ensured) return false;
-      cached.labels = cached.labels.filter((label) => label.name !== definition.name);
-      cached.labels.push(ensured);
-    }
-    return true;
+    return await operation();
   } finally {
     release();
   }
 };
+
+// Called under the shared definition lock. MR attachment may create a personal
+// label, but only the project-wide refresh is allowed to recolor an existing one.
+const ensureReviewLabelDefinitions = async (
+  projectId: number,
+  definitions: ReviewLabel[],
+  options: { preservePersonalColors?: boolean; existingOnly?: boolean } = {},
+): Promise<boolean> => {
+  if (!definitions.length) return true;
+  const now = Date.now();
+  let cached = projectLabelCache.get(projectId);
+  if (!cached || now - cached.fetchedAt > 5 * 60 * 1000) {
+    const key = `${projectId}:list`;
+    const attemptedAt = labelAttempts.get(key);
+    if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) return false;
+    labelAttempts.set(key, now);
+    const labels = await fetchProjectLabels(projectId);
+    if (!labels) return false;
+    cached = { fetchedAt: now, labels };
+    projectLabelCache.set(projectId, cached);
+  }
+  pruneRecentEntries(labelAttempts, now);
+  let ok = true;
+  for (const definition of definitions) {
+    const existing = cached.labels.find((label) => label.name === definition.name);
+    if (!existing && options.existingOnly) continue;
+    if (existing && options.preservePersonalColors && !isReviewStatusLabel(definition.name)) continue;
+    if (existing?.color.toLowerCase() === definition.color.toLowerCase()) continue;
+    const key = `${projectId}:${definition.name}:${existing ? 'color' : 'create'}`;
+    const attemptedAt = labelAttempts.get(key);
+    if (attemptedAt && now - attemptedAt < LABEL_EDIT_COOLDOWN_MS) { ok = false; continue; }
+    labelAttempts.set(key, now);
+    const ensured = await ensureProjectLabel(projectId, definition, existing);
+    if (!ensured) { ok = false; continue; }
+    cached.labels = cached.labels.filter((label) => label.name !== definition.name);
+    cached.labels.push(ensured);
+  }
+  return ok;
+};
+
+export const syncProjectPersonalLabelColors = async (
+  projectId: number,
+  loadDefinitions: () => Promise<ReviewLabel[]>,
+): Promise<boolean> => withLabelDefinitionLock(async () => {
+  // Read Mongo after acquiring the lock, never apply a queued stale color plan.
+  const definitions = await loadDefinitions();
+  return ensureReviewLabelDefinitions(projectId, definitions, { existingOnly: true });
+});
 
 const normalizeValues = (values: string[]): string[] =>
   Array.from(new Set(values.map((value) => value.trim()).filter(Boolean)));
@@ -180,7 +199,9 @@ export const syncReviewerLabelsToGitlab = async (
     previousReviewerLabels,
     nextReviewerLabels,
   );
-  if (!(await ensureReviewLabelDefinitions(projectId, definitions))) {
+  if (!(await withLabelDefinitionLock(() => ensureReviewLabelDefinitions(
+    projectId, definitions, { preservePersonalColors: true },
+  )))) {
     return { ok: false, labels, error: 'GitLab review label definitions are unavailable' };
   }
   if (areSameStringSets(labels, currentLabels)) {

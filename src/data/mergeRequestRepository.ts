@@ -194,10 +194,11 @@ export const listActiveMergeRequestsByAuthor = async (
     .toArray();
 };
 
-export const listOpenMergeRequests = async (): Promise<MergeRequestDocument[]> => {
+export const listOpenMergeRequests = async (projectId?: number): Promise<MergeRequestDocument[]> => {
   const collection = await getCollection();
   return collection
     .find({
+      ...(projectId !== undefined ? { projectId } : {}),
       $or: [
         { state: { $exists: false } },
         { state: { $nin: ['merged', 'closed'] } },

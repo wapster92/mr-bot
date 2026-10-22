@@ -67,6 +67,7 @@ before(() => {
   });
   mockModule('../src/data/mergeRequestRepository.ts', {
     findMergeRequest: async () => structuredClone(stored),
+    listOpenMergeRequests: async () => [structuredClone(stored)],
     upsertMergeRequest: async (update: Partial<MergeRequestDocument>) => {
       stored = { ...stored, ...structuredClone(update) };
     },
@@ -77,6 +78,7 @@ before(() => {
   });
   mockModule('../src/data/userStore.ts', {
     listLeadUsers: async () => people.filter((user) => user.isLead),
+    listUsersForReviewLabels: async () => people,
     listActiveReviewers: async () => ['reviewer.one', 'reviewer.two'],
     listActiveUsernames: async () => people.map((user) => user.gitlabUsername),
     getUserByGitlabUsername: async (username: string) => people.find(

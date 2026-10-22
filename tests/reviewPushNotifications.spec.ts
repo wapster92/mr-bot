@@ -72,6 +72,7 @@ before(() => {
   });
   mockModule('../src/services/reviewReminderService.ts', { markReviewCompletedForReviewer: async () => {} });
   mockModule('../src/services/mergeRequestSync.ts', { syncMergeRequestFromGitlab: async () => {} });
+  mockModule('../src/services/projectReviewLabelColors.ts', { refreshProjectReviewLabelColors: async () => true });
   mockModule('../src/services/workingHours.ts', { isWithinWorkingHours: () => withinHours });
   mockModule('../src/data/notificationQueueRepository.ts', {
     enqueueNotification: async (input: NotificationQueueDocument, status: 'processing' | 'pending') => {

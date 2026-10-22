@@ -19,6 +19,7 @@ import { runGameAction } from './gameScoring';
 import { syncMergeRequestGameReadiness } from './mergeReadiness';
 import { getMergeRequestFinishedAt } from './mergeRequestRetention';
 import { loadReviewCommentHistory } from './reviewCommentHistory';
+import { refreshProjectReviewLabelColors } from './projectReviewLabelColors';
 
 const SYNC_INTERVAL_MS = 15 * 60 * 1000;
 const BACKFILL_INTERVAL_MS = 60 * 60 * 1000;
@@ -165,6 +166,7 @@ export const syncMergeRequestFromGitlab = async (
     await runGameAction(`periodic readiness ${projectId}/${iid}`, async () => {
       await syncMergeRequestGameReadiness(projectId, iid, now);
     });
+    await refreshProjectReviewLabelColors(projectId);
   };
   if (options.lockHeld) {
     // Used by note handling, which already holds this exact MR lock.
@@ -192,6 +194,8 @@ export const syncOpenMergeRequests = async (): Promise<void> => {
         console.warn(`[sync] Failed MR ${mr.projectId}/${mr.iid}`, error);
       });
     }
+    // Also retry deferred color resets in projects whose last MR was closed.
+    for (const projectId of await listProjectIds()) await refreshProjectReviewLabelColors(projectId);
   } catch (error) {
     console.warn('[sync] Failed to sync open merge requests', error);
   } finally {

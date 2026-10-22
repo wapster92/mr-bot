@@ -7,6 +7,7 @@ import {
   buildPersonalReviewLabel,
   getReviewUrgency,
   MERGE_READY_LABEL,
+  REVIEW_OVERDUE_LABELS,
 } from '../src/services/reviewLabelPlan';
 import { isApprovalNotificationRelevant } from '../src/services/approvalNotifications';
 
@@ -34,10 +35,10 @@ describe('review labels and approval deadlines', () => {
         name: 'Ирина В. Сорокина', color: '#428bca',
       });
       assert.deepEqual(buildPersonalReviewLabel(user, 'Ирина В. Сорокина', 'warning'), {
-        name: '⚠️ Ирина В. Сорокина', color: '#ed9121',
+        name: 'Ирина В. Сорокина', color: '#ed9121',
       });
       assert.deepEqual(buildPersonalReviewLabel(user, 'Ирина В. Сорокина', 'danger'), {
-        name: '🚨 Ирина В. Сорокина', color: '#d9534f',
+        name: 'Ирина В. Сорокина', color: '#d9534f',
       });
     }
   });
@@ -59,12 +60,13 @@ describe('review labels and approval deadlines', () => {
     const plan = buildReviewLabelPlan({
       ...mr, approvalRequestedAt: initial.approvalRequestedAt, approvedBy: ['REVIEWER.ONE'],
     }, users, monday);
-    assert.equal(plan.labels.length, 3);
+    assert.equal(plan.labels.length, 4);
     assert.ok(plan.labels.every((label) => !label.name.includes('Первый ревьюер')));
     assert.equal(plan.approvalRequestedAt['tech.lead'], monday);
     assert.equal(plan.approvalRequestedAt['team.lead'], monday);
     assert.equal(plan.approvalRequestedAt['reviewer.two'], friday);
-    assert.ok(plan.labels.find((label) => label.name.includes('Второй ревьюер'))?.name.startsWith('⚠️'));
+    assert.equal(plan.labels.find((label) => label.name === 'Второй ревьюер')?.color, '#ed9121');
+    assert.ok(plan.labels.includes(REVIEW_OVERDUE_LABELS.warning));
     assert.equal(plan.labels.find((label) => label.name === 'Техлид')?.color, '#428bca');
   });
 
@@ -141,7 +143,9 @@ describe('review labels and approval deadlines', () => {
       approvalRequestedAt: { volunteer: friday },
     };
     const plan = buildReviewLabelPlan(doc, [...users, volunteer, volunteer], monday);
-    assert.deepEqual(plan.labels, [{ name: '⚠️ Ирина В. Сорокина', color: '#ed9121' }]);
+    assert.deepEqual(plan.labels, [
+      { name: 'Ирина В. Сорокина', color: '#ed9121' }, REVIEW_OVERDUE_LABELS.warning,
+    ]);
     assert.deepEqual(doc.reviewers, ['reviewer.one', 'reviewer.two']);
     assert.deepEqual(buildReviewLabelPlan({ ...doc, approvedBy: [...doc.approvedBy, 'volunteer'] },
       [...users, volunteer], monday).labels, [MERGE_READY_LABEL]);

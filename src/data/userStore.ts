@@ -138,6 +138,13 @@ export const listUsersForManagement = async (): Promise<WithId<UserDocument>[]> 
     .toArray();
 };
 
+// Include paused/forbidden records so their existing personal label can return
+// to blue. The review policy still excludes them from pending obligations.
+export const listUsersForReviewLabels = async (): Promise<UserDocument[]> => {
+  const collection = await getCollection();
+  return collection.find({}).toArray();
+};
+
 export const getManagedUserById = async (
   id: string,
 ): Promise<WithId<UserDocument> | undefined> => {
